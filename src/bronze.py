@@ -40,13 +40,13 @@ _session.mount(
 )
 
 
-def fetch_city_weather(city: dict) -> dict:
+def fetch_city_weather(city: dict, past_days: int = PAST_DAYS, forecast_days: int = FORECAST_DAYS) -> dict:
     params = {
         "latitude": city["latitude"],
         "longitude": city["longitude"],
         "hourly": HOURLY_FIELDS,
-        "past_days": PAST_DAYS,
-        "forecast_days": FORECAST_DAYS,
+        "past_days": past_days,
+        "forecast_days": forecast_days,
         "timezone": "UTC",
     }
     response = _session.get(API_URL, params=params, timeout=30)
@@ -54,13 +54,13 @@ def fetch_city_weather(city: dict) -> dict:
     return response
 
 
-def run(con: duckdb.DuckDBPyConnection) -> int:
+def run(con: duckdb.DuckDBPyConnection, past_days: int = PAST_DAYS, forecast_days: int = FORECAST_DAYS) -> int:
     con.execute(CREATE_SCHEMA)
     con.execute(CREATE_TABLE)
 
     rows_landed = 0
     for city in CITIES:
-        response = fetch_city_weather(city)
+        response = fetch_city_weather(city, past_days=past_days, forecast_days=forecast_days)
         # Naive-but-UTC on purpose: binding a tz-aware datetime into a plain
         # TIMESTAMP column lets duckdb convert it through the *local system*
         # timezone before storing, not UTC - stripping tzinfo ourselves after

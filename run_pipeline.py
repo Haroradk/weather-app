@@ -9,7 +9,7 @@ corrupts data - it just redoes the work.
 from datetime import datetime, timezone
 
 from config import CITIES, get_connection
-from src import bronze, dq, gold, silver
+from src import bronze, dq, forecast, gold, silver
 
 CITY_NAMES = [city["name"] for city in CITIES]
 
@@ -52,6 +52,18 @@ def main() -> None:
         where_sql="date = CURRENT_DATE",
     )
     print(f"Gold done: {summarized} daily rows.\n")
+
+    print("Forecast: training and predicting tomorrow's temperature...")
+    predicted = forecast.run(con)
+    if predicted:
+        dq.check_not_empty(con, "gold.temperature_forecast")
+        dq.check_no_nulls(con, "gold.temperature_forecast", ["city", "target_date", "predicted_temp_avg_c"])
+        dq.check_temperature_range(con, "gold.temperature_forecast", "predicted_temp_avg_c")
+    else:
+        # Not a failure: every city just needs more accumulated settled
+        # history than exists yet (see forecast.MIN_TRAINING_ROWS).
+        print("  forecast: no predictions yet - not enough settled history for any city")
+    print(f"Forecast done: {predicted} prediction(s).\n")
 
     print("Pipeline complete.")
     con.close()

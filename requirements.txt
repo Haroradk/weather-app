@@ -3,3 +3,4 @@ requests
 streamlit
 pandas
 python-dotenv
+scikit-learn

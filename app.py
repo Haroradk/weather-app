@@ -6,6 +6,7 @@ this is the "nobody points a dashboard at bronze" rule from the README
 in practice. Run with: streamlit run app.py
 """
 
+import pandas as pd
 import streamlit as st
 
 import config
@@ -60,6 +61,51 @@ with col2:
 
 st.subheader("Gold: daily summary table")
 st.dataframe(gold_df, use_container_width=True)
+
+st.subheader("Next-day temperature forecast")
+st.caption(
+    "One scikit-learn linear regression per city, trained fresh each run on yesterday's "
+    "temperature + day-of-year seasonality. A baseline to beat, not a state-of-the-art forecaster."
+)
+
+forecast_df = con.execute(
+    f"""
+    SELECT city, target_date, predicted_temp_avg_c, training_rows, trained_at
+    FROM gold.temperature_forecast
+    WHERE city IN ({placeholders})
+    ORDER BY target_date DESC
+    """,
+    selected_cities,
+).df()
+
+if forecast_df.empty:
+    st.info("No forecast yet - every city needs more accumulated settled history first.")
+else:
+    latest_forecast = forecast_df.sort_values("target_date").groupby("city").tail(1)
+    cols = st.columns(len(latest_forecast))
+    for col, (_, row) in zip(cols, latest_forecast.iterrows()):
+        target_date_label = pd.Timestamp(row["target_date"]).strftime("%Y-%m-%d")
+        col.metric(f"{row['city']} - {target_date_label}", f"{row['predicted_temp_avg_c']} °C")
+
+    # Only predictions whose target_date has since become a settled actual
+    # can be scored - a forecast for tomorrow has no outcome yet to compare against.
+    evaluated_df = con.execute(
+        f"""
+        SELECT f.city, f.target_date, f.predicted_temp_avg_c, g.temp_avg_c AS actual_temp_avg_c,
+               ROUND(f.predicted_temp_avg_c - g.temp_avg_c, 1) AS error_c
+        FROM gold.temperature_forecast f
+        JOIN gold.weather_daily_summary g ON f.city = g.city AND f.target_date = g.date
+        WHERE f.target_date <= CURRENT_DATE AND f.city IN ({placeholders})
+        ORDER BY f.target_date DESC
+        """,
+        selected_cities,
+    ).df()
+
+    if evaluated_df.empty:
+        st.caption("No predictions have reached their target date yet - check back after tomorrow's run.")
+    else:
+        st.caption(f"Predicted vs. actual, mean absolute error: {evaluated_df['error_c'].abs().mean():.1f} °C")
+        st.dataframe(evaluated_df, use_container_width=True)
 
 with st.expander("Silver: raw hourly readings"):
     hourly_df = con.execute(
