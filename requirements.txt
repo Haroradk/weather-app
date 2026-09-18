@@ -1,2 +1,4 @@
 duckdb
 requests
+streamlit
+pandas

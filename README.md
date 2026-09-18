@@ -51,16 +51,30 @@ print(con.execute('SELECT * FROM gold.weather_daily_summary ORDER BY city, date'
 
 Or use the DuckDB CLI (`brew install duckdb`) for a proper SQL shell against `data/weather.duckdb`.
 
-## What's deliberately simplified (and what to learn next)
+### Dashboard
+
+```bash
+source .venv/bin/activate
+streamlit run app.py
+```
+
+Opens at http://localhost:8501. Reads gold (charts + table), with silver and bronze
+available in collapsed expanders further down the page.
+
+## Roadmap to cloud + a real frontend
+
+1. **GitHub.** Push this repo so you get history and a place for CI/Actions to run from.
+2. **MotherDuck** (hosted DuckDB, free tier). Swap the local `data/weather.duckdb` connection
+   for a MotherDuck one — same SQL, same code, just a different connection string + token.
+   This is what makes the data reachable from something other than your laptop.
+3. **GitHub Actions**, scheduled (`on: schedule: cron: ...`), runs `run_pipeline.py` against
+   MotherDuck daily. This is the pipeline "running in the cloud."
+4. **Streamlit Community Cloud** (free, sign in with GitHub) deploys `app.py` pointed at
+   MotherDuck instead of the local file. This is your frontend, live on a public URL.
+
+## Other deliberate simplifications (learn these next, once the above is running)
 
 - **Full refresh, not incremental.** Silver/gold rebuild from scratch every run. Real pipelines
   track a watermark (e.g. "only process bronze rows newer than X") once full-refresh gets slow.
-- **No orchestrator/scheduler yet.** Right now you run `run_pipeline.py` by hand. Next step:
-  a daily cron job, or a GitHub Actions workflow on a schedule (`on: schedule: cron: ...`).
-- **No version control yet.** Once you're happy with this, `git init` + push to GitHub, so
-  you get history and can eventually run CI (e.g. run the pipeline + a smoke test on every push).
-- **Local only.** DuckDB file lives on your laptop. Natural next step once comfortable:
-  point the same SQL logic at a free-tier cloud warehouse (BigQuery sandbox, Snowflake trial,
-  Motherduck for hosted DuckDB) or swap the orchestrator for something like Airflow/Dagster.
 - **Hand-rolled DQ checks.** `src/dq.py` is a toy version of what dbt tests or Great Expectations
   do for real. Worth trying once you outgrow this.
