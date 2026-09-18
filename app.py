@@ -77,50 +77,78 @@ with col2:
 st.subheader("Gold: daily summary table")
 st.dataframe(gold_df, use_container_width=True)
 
-st.subheader("Next-day temperature forecast")
+st.subheader("Next-day weather forecast")
 st.caption(
-    "One scikit-learn linear regression per city, trained fresh each run on yesterday's "
-    "temperature + day-of-year seasonality. A baseline to beat, not a state-of-the-art forecaster."
+    "One scikit-learn linear regression per city per metric, trained fresh each run on "
+    "yesterday's value of that same metric + day-of-year seasonality. A baseline to beat, "
+    "not a state-of-the-art forecaster."
 )
 
 forecast_df = con.execute(
     f"""
-    SELECT city, target_date, predicted_temp_avg_c, training_rows, trained_at
-    FROM gold.temperature_forecast
-    WHERE city IN ({placeholders})
+    SELECT city, target_date, predicted_temp_min_c, predicted_temp_max_c, predicted_temp_avg_c,
+           predicted_precipitation_sum_mm, predicted_wind_speed_max_kmh, training_rows
+    FROM gold.weather_forecast
+    WHERE city IN ({placeholders}) AND NOT is_backtest
     ORDER BY target_date DESC
     """,
     selected_cities,
 ).df()
 
 if forecast_df.empty:
-    st.info("No forecast yet - every city needs more accumulated settled history first.")
+    st.info("No live forecast yet - every city needs more accumulated settled history first.")
 else:
     latest_forecast = forecast_df.sort_values("target_date").groupby("city").tail(1)
-    cols = st.columns(len(latest_forecast))
-    for col, (_, row) in zip(cols, latest_forecast.iterrows()):
-        target_date_label = pd.Timestamp(row["target_date"]).strftime("%Y-%m-%d")
-        col.metric(f"{row['city']} - {target_date_label}", f"{row['predicted_temp_avg_c']} °C")
+    st.dataframe(latest_forecast, use_container_width=True)
 
-    # Only predictions whose target_date has since become a settled actual
-    # can be scored - a forecast for tomorrow has no outcome yet to compare against.
-    evaluated_df = con.execute(
-        f"""
-        SELECT f.city, f.target_date, f.predicted_temp_avg_c, g.temp_avg_c AS actual_temp_avg_c,
-               ROUND(f.predicted_temp_avg_c - g.temp_avg_c, 1) AS error_c
-        FROM gold.temperature_forecast f
-        JOIN gold.weather_daily_summary g ON f.city = g.city AND f.target_date = g.date
-        WHERE f.target_date <= CURRENT_DATE AND f.city IN ({placeholders})
-        ORDER BY f.target_date DESC
-        """,
-        selected_cities,
-    ).df()
+METRICS = {
+    "temp_min_c": "Min temperature (°C)",
+    "temp_max_c": "Max temperature (°C)",
+    "temp_avg_c": "Avg temperature (°C)",
+    "precipitation_sum_mm": "Precipitation (mm)",
+    "wind_speed_max_kmh": "Max wind speed (km/h)",
+}
 
-    if evaluated_df.empty:
-        st.caption("No predictions have reached their target date yet - check back after tomorrow's run.")
-    else:
-        st.caption(f"Predicted vs. actual, mean absolute error: {evaluated_df['error_c'].abs().mean():.1f} °C")
-        st.dataframe(evaluated_df, use_container_width=True)
+st.subheader("Forecast accuracy: predicted vs. actual")
+st.caption(
+    "Includes both live daily predictions and a walk-forward backtest (run "
+    "`python scripts/backtest.py` to (re)fill in historical evaluation points from "
+    "existing settled history, without touching real live predictions)."
+)
+
+metric_select_cols = ", ".join(
+    f"f.predicted_{m}, g.{m} AS actual_{m}" for m in METRICS
+)
+evaluated_df = con.execute(
+    f"""
+    SELECT f.city, f.target_date, f.is_backtest, {metric_select_cols}
+    FROM gold.weather_forecast f
+    JOIN gold.weather_daily_summary g ON f.city = g.city AND f.target_date = g.date
+    WHERE f.city IN ({placeholders})
+    ORDER BY f.target_date
+    """,
+    selected_cities,
+).df()
+
+if evaluated_df.empty:
+    st.info("No evaluated predictions yet - run `python scripts/backtest.py`, or check back after tomorrow's run.")
+else:
+    n_backtest = int(evaluated_df["is_backtest"].sum())
+    st.caption(f"{len(evaluated_df)} evaluated predictions ({n_backtest} backtested, {len(evaluated_df) - n_backtest} live).")
+
+    eval_city = st.selectbox("City", selected_cities, key="eval_city")
+    city_eval_df = evaluated_df[evaluated_df["city"] == eval_city].set_index("target_date")
+
+    tabs = st.tabs(list(METRICS.values()))
+    for tab, (metric, label) in zip(tabs, METRICS.items()):
+        with tab:
+            pair_df = city_eval_df[[f"predicted_{metric}", f"actual_{metric}"]].dropna()
+            if pair_df.empty:
+                st.caption("No evaluated predictions for this metric yet.")
+            else:
+                mae = (pair_df[f"predicted_{metric}"] - pair_df[f"actual_{metric}"]).abs().mean()
+                st.caption(f"Mean absolute error: {mae:.2f}")
+                st.line_chart(pair_df)
 
 with st.expander("Silver: raw hourly readings"):
     hourly_df = con.execute(

@@ -53,12 +53,19 @@ def main() -> None:
     )
     print(f"Gold done: {summarized} daily rows.\n")
 
-    print("Forecast: training and predicting tomorrow's temperature...")
+    print("Forecast: training and predicting tomorrow's weather...")
     predicted = forecast.run(con)
     if predicted:
-        dq.check_not_empty(con, "gold.temperature_forecast")
-        dq.check_no_nulls(con, "gold.temperature_forecast", ["city", "target_date", "predicted_temp_avg_c"])
-        dq.check_temperature_range(con, "gold.temperature_forecast", "predicted_temp_avg_c")
+        dq.check_not_empty(con, "gold.weather_forecast")
+        dq.check_no_nulls(con, "gold.weather_forecast", [
+            "city", "target_date", "predicted_temp_min_c", "predicted_temp_max_c",
+            "predicted_temp_avg_c", "predicted_precipitation_sum_mm", "predicted_wind_speed_max_kmh",
+        ])
+        dq.check_temperature_range(con, "gold.weather_forecast", "predicted_temp_min_c")
+        dq.check_temperature_range(con, "gold.weather_forecast", "predicted_temp_max_c")
+        dq.check_temperature_range(con, "gold.weather_forecast", "predicted_temp_avg_c")
+        dq.check_non_negative(con, "gold.weather_forecast", "predicted_precipitation_sum_mm")
+        dq.check_non_negative(con, "gold.weather_forecast", "predicted_wind_speed_max_kmh")
     else:
         # Not a failure: every city just needs more accumulated settled
         # history than exists yet (see forecast.MIN_TRAINING_ROWS).

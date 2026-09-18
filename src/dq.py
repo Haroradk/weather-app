@@ -42,6 +42,13 @@ def check_temperature_range(con: duckdb.DuckDBPyConnection, table: str, column: 
     print(f"  dq: {table}.{column} within plausible range")
 
 
+def check_non_negative(con: duckdb.DuckDBPyConnection, table: str, column: str) -> None:
+    bad = con.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} < 0").fetchone()[0]
+    if bad > 0:
+        raise DataQualityError(f"{table}.{column} has {bad} negative values (e.g. precipitation, wind speed can't be negative).")
+    print(f"  dq: {table}.{column} has no negative values")
+
+
 def check_row_count_per_group(
     con: duckdb.DuckDBPyConnection,
     table: str,
