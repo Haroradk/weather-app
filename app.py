@@ -6,8 +6,23 @@ this is the "nobody points a dashboard at bronze" rule from the README
 in practice. Run with: streamlit run app.py
 """
 
+import os
+
 import pandas as pd
 import streamlit as st
+
+# Streamlit Community Cloud's secrets manager exposes values via st.secrets,
+# not as real OS environment variables - unlike GitHub Actions, which does
+# inject secrets as env vars. Bridging it into os.environ here means
+# config.py only ever has to know about os.environ, and the exact same
+# get_connection() works locally (.env), in CI, and on Streamlit Cloud.
+# Must happen before `import config`, since it reads os.environ at import time.
+try:
+    for key in ("MOTHERDUCK_TOKEN", "MOTHERDUCK_DATABASE"):
+        if key in st.secrets:
+            os.environ[key] = st.secrets[key]
+except Exception:
+    pass  # no secrets.toml locally - that's fine, .env covers local dev
 
 import config
 
