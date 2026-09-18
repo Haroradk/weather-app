@@ -1,0 +1,25 @@
+name: Daily weather ETL
+
+on:
+  schedule:
+    # 06:00 UTC daily. GitHub Actions cron can slip under load - that's
+    # exactly what dq.check_freshness's slack (MAX_STALENESS_HOURS) covers.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {} # adds a "Run workflow" button in the Actions tab, for manual runs/testing
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - run: python run_pipeline.py
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          MOTHERDUCK_DATABASE: weather
