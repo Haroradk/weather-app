@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 
 import duckdb
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 from config import API_URL, CITIES, FORECAST_DAYS, HOURLY_FIELDS, PAST_DAYS, get_connection
 
@@ -28,6 +30,15 @@ CREATE TABLE IF NOT EXISTS bronze.raw_weather_observations (
 );
 """
 
+# Retries a single flaky request (timeout, connection reset, 5xx) before it
+# ever counts as a pipeline failure. Doesn't retry 4xx - a bad request won't
+# fix itself by repeating it.
+_session = requests.Session()
+_session.mount(
+    "https://",
+    HTTPAdapter(max_retries=Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])),
+)
+
 
 def fetch_city_weather(city: dict) -> dict:
     params = {
@@ -38,7 +49,7 @@ def fetch_city_weather(city: dict) -> dict:
         "forecast_days": FORECAST_DAYS,
         "timezone": "UTC",
     }
-    response = requests.get(API_URL, params=params, timeout=30)
+    response = _session.get(API_URL, params=params, timeout=30)
     response.raise_for_status()
     return response
 
