@@ -20,8 +20,9 @@ import json
 from datetime import datetime, timezone
 
 import duckdb
+import pandas as pd
 
-from config import DB_PATH
+from config import get_connection
 
 CREATE_SCHEMA = "CREATE SCHEMA IF NOT EXISTS silver;"
 
@@ -75,13 +76,26 @@ def run(con: duckdb.DuckDBPyConnection) -> int:
         for (city, _fetched_at, observation_time, temp_c, precip_mm, wind_kmh, humidity_pct) in latest.values()
     ]
 
-    con.execute("CREATE OR REPLACE TABLE silver.weather_hourly (city VARCHAR, observation_time TIMESTAMP, temperature_c DOUBLE, precipitation_mm DOUBLE, wind_speed_kmh DOUBLE, humidity_pct DOUBLE, loaded_at TIMESTAMP)")
-    con.executemany("INSERT INTO silver.weather_hourly VALUES (?, ?, ?, ?, ?, ?, ?)", final_rows)
+    # Loaded as one bulk statement via a DataFrame rather than one INSERT per
+    # row: against a remote warehouse (MotherDuck), a per-row executemany
+    # means one network round trip per row - fine locally, painfully slow
+    # once the connection isn't in-process anymore.
+    final_df = pd.DataFrame(
+        final_rows,
+        columns=["city", "observation_time", "temperature_c", "precipitation_mm", "wind_speed_kmh", "humidity_pct", "loaded_at"],
+    )
+    final_df["observation_time"] = pd.to_datetime(final_df["observation_time"])
+    # Stored naive-UTC (not TIMESTAMPTZ), consistent with bronze.fetched_at,
+    # so downstream comparisons (e.g. dq.check_freshness) don't have to
+    # reason about timezone conversion on top of staleness math.
+    final_df["loaded_at"] = pd.to_datetime(final_df["loaded_at"]).dt.tz_convert("UTC").dt.tz_localize(None)
+
+    con.execute("CREATE OR REPLACE TABLE silver.weather_hourly AS SELECT * FROM final_df")
 
     return len(final_rows)
 
 
 if __name__ == "__main__":
-    con = duckdb.connect(DB_PATH)
+    con = get_connection()
     loaded = run(con)
     print(f"Silver: {loaded} deduplicated hourly rows.")

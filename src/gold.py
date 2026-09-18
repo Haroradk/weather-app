@@ -10,7 +10,7 @@ dashboard at bronze or silver.
 
 import duckdb
 
-from config import DB_PATH
+from config import get_connection
 
 CREATE_SCHEMA = "CREATE SCHEMA IF NOT EXISTS gold;"
 
@@ -38,6 +38,6 @@ def run(con: duckdb.DuckDBPyConnection) -> int:
 
 
 if __name__ == "__main__":
-    con = duckdb.connect(DB_PATH)
+    con = get_connection()
     row_count = run(con)
     print(f"Gold: {row_count} daily summary rows.")

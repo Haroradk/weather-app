@@ -6,21 +6,21 @@ this is the "nobody points a dashboard at bronze" rule from the README
 in practice. Run with: streamlit run app.py
 """
 
-import duckdb
 import streamlit as st
 
-from config import DB_PATH
+import config
 
 st.set_page_config(page_title="Weather ETL", page_icon="\U0001F326", layout="wide")
 
 
 @st.cache_resource
-def get_connection():
+def get_dashboard_connection():
     # read_only=True: the dashboard should never be able to write to the warehouse.
-    return duckdb.connect(DB_PATH, read_only=True)
+    # (MotherDuck connections ignore this and stay read-write regardless.)
+    return config.get_connection(read_only=True)
 
 
-con = get_connection()
+con = get_dashboard_connection()
 
 st.title("Weather ETL Pipeline")
 st.caption("Bronze -> Silver -> Gold, served straight out of DuckDB.")

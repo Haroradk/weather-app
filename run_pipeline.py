@@ -6,18 +6,33 @@ a day. Each layer is idempotent, so re-running this after a failure never
 corrupts data - it just redoes the work.
 """
 
-import duckdb
+from datetime import datetime, timezone
 
-from config import DB_PATH
+from config import CITIES, get_connection
 from src import bronze, dq, gold, silver
+
+CITY_NAMES = [city["name"] for city in CITIES]
+
+# Pipeline runs daily; 30h gives slack for scheduler jitter (GitHub Actions
+# cron can slip by tens of minutes under load) without masking a real gap.
+MAX_STALENESS_HOURS = 30
 
 
 def main() -> None:
-    con = duckdb.connect(DB_PATH)
+    con = get_connection()
+    # Naive-but-UTC, matching how bronze.fetched_at is stored (see bronze.py).
+    run_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     print("Bronze: fetching raw weather data...")
     landed = bronze.run(con)
     dq.check_not_empty(con, "bronze.raw_weather_observations")
+    # Scoped to *this run*: catches one city silently landing zero rows
+    # even though the bronze table overall is non-empty from past runs.
+    dq.check_row_count_per_group(
+        con, "bronze.raw_weather_observations", "city", CITY_NAMES,
+        where_sql="fetched_at >= ?", where_params=[run_started_at],
+    )
+    dq.check_freshness(con, "bronze.raw_weather_observations", "fetched_at", MAX_STALENESS_HOURS)
     print(f"Bronze done: {landed} responses landed.\n")
 
     print("Silver: parsing and deduplicating...")
@@ -30,6 +45,12 @@ def main() -> None:
     print("Gold: building daily summary...")
     summarized = gold.run(con)
     dq.check_not_empty(con, "gold.weather_daily_summary")
+    # Every city should have today's aggregate - catches a city missing
+    # from today's forecast window even though gold overall isn't empty.
+    dq.check_row_count_per_group(
+        con, "gold.weather_daily_summary", "city", CITY_NAMES,
+        where_sql="date = CURRENT_DATE",
+    )
     print(f"Gold done: {summarized} daily rows.\n")
 
     print("Pipeline complete.")

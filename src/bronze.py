@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 import duckdb
 import requests
 
-from config import API_URL, CITIES, DB_PATH, FORECAST_DAYS, HOURLY_FIELDS, PAST_DAYS
+from config import API_URL, CITIES, FORECAST_DAYS, HOURLY_FIELDS, PAST_DAYS, get_connection
 
 CREATE_SCHEMA = "CREATE SCHEMA IF NOT EXISTS bronze;"
 
@@ -50,7 +50,12 @@ def run(con: duckdb.DuckDBPyConnection) -> int:
     rows_landed = 0
     for city in CITIES:
         response = fetch_city_weather(city)
-        fetched_at = datetime.now(timezone.utc)
+        # Naive-but-UTC on purpose: binding a tz-aware datetime into a plain
+        # TIMESTAMP column lets duckdb convert it through the *local system*
+        # timezone before storing, not UTC - stripping tzinfo ourselves after
+        # converting to UTC avoids that ambiguity regardless of what machine
+        # (or CI runner) this runs on.
+        fetched_at = datetime.now(timezone.utc).replace(tzinfo=None)
         con.execute(
             "INSERT INTO bronze.raw_weather_observations VALUES (?, ?, ?, ?)",
             [city["name"], fetched_at, response.url, response.text],
@@ -62,6 +67,6 @@ def run(con: duckdb.DuckDBPyConnection) -> int:
 
 
 if __name__ == "__main__":
-    con = duckdb.connect(DB_PATH)
+    con = get_connection()
     landed = run(con)
     print(f"Bronze: landed {landed} raw responses.")

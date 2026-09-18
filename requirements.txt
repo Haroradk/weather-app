@@ -2,3 +2,4 @@ duckdb
 requests
 streamlit
 pandas
+python-dotenv
