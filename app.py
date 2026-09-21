@@ -9,6 +9,7 @@ in practice. Run with: streamlit run app.py
 import os
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 # Streamlit Community Cloud's secrets manager exposes values via st.secrets,
@@ -27,6 +28,25 @@ except Exception:
 import config
 
 st.set_page_config(page_title="Weather ETL", page_icon="\U0001F326", layout="wide")
+
+# scrollZoom: drag-to-zoom is on by default in Plotly, but scroll-wheel/pinch
+# zoom isn't unless enabled explicitly. displaylogo=False just hides the
+# Plotly wordmark from the toolbar - every chart gets zoom, pan, box-zoom,
+# and a reset-axes button via the toolbar regardless.
+PLOTLY_CONFIG = {"scrollZoom": True, "displaylogo": False}
+
+
+def line_chart(df: pd.DataFrame, x: str, y, **kwargs):
+    fig = px.line(df, x=x, y=y, markers=True, **kwargs)
+    fig.update_layout(legend_title_text="", hovermode="x unified", margin=dict(t=10))
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+
+
+def grouped_bar_chart(df: pd.DataFrame, x: str, y: str, color: str, **kwargs):
+    # barmode="group": one bar per city side by side, not stacked into one bar.
+    fig = px.bar(df, x=x, y=y, color=color, barmode="group", **kwargs)
+    fig.update_layout(legend_title_text="", margin=dict(t=10))
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
 
 
 @st.cache_resource
@@ -61,18 +81,15 @@ gold_df = con.execute(
 ).df()
 
 st.subheader("Daily average temperature")
-temp_pivot = gold_df.pivot(index="date", columns="city", values="temp_avg_c")
-st.line_chart(temp_pivot)
+line_chart(gold_df, x="date", y="temp_avg_c", color="city")
 
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("Daily precipitation (mm)")
-    precip_pivot = gold_df.pivot(index="date", columns="city", values="precipitation_sum_mm")
-    st.bar_chart(precip_pivot)
+    grouped_bar_chart(gold_df, x="date", y="precipitation_sum_mm", color="city")
 with col2:
     st.subheader("Daily max wind speed (km/h)")
-    wind_pivot = gold_df.pivot(index="date", columns="city", values="wind_speed_max_kmh")
-    st.bar_chart(wind_pivot)
+    grouped_bar_chart(gold_df, x="date", y="wind_speed_max_kmh", color="city")
 
 st.subheader("Gold: daily summary table")
 st.dataframe(gold_df, use_container_width=True)
@@ -142,13 +159,13 @@ else:
     tabs = st.tabs(list(METRICS.values()))
     for tab, (metric, label) in zip(tabs, METRICS.items()):
         with tab:
-            pair_df = city_eval_df[[f"predicted_{metric}", f"actual_{metric}"]].dropna()
+            pair_df = city_eval_df[[f"predicted_{metric}", f"actual_{metric}"]].dropna().reset_index()
             if pair_df.empty:
                 st.caption("No evaluated predictions for this metric yet.")
             else:
                 mae = (pair_df[f"predicted_{metric}"] - pair_df[f"actual_{metric}"]).abs().mean()
                 st.caption(f"Mean absolute error: {mae:.2f}")
-                st.line_chart(pair_df)
+                line_chart(pair_df, x="target_date", y=[f"predicted_{metric}", f"actual_{metric}"])
 
 with st.expander("Silver: raw hourly readings"):
     hourly_df = con.execute(
