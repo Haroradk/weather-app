@@ -86,7 +86,7 @@ available in collapsed expanders further down the page.
 - **Streamlit Community Cloud** — deploy `app.py` there (sign in with GitHub, add the same
   `MOTHERDUCK_TOKEN` as a secret in the app's settings) for a dashboard on a public URL, instead
   of only `streamlit run app.py` locally. Deployed at
-  [weather-app-ifiqthuzkwenappqspw3hez.streamlit.app](https://weather-app-ifiqthuzkwenappqspw3hez.streamlit.app).
+  [haroradk-weatherapp.streamlit.app](https://haroradk-weatherapp.streamlit.app).
   (Needed a public repo and the Streamlit GitHub App actually installed on the account, not just
   logged in via OAuth - two easy things to trip on.)
 
