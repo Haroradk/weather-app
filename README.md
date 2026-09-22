@@ -128,6 +128,18 @@ it into silver/gold, then `python scripts/backtest.py` to generate evaluation hi
 (We tried `past_days=90` first - Open-Meteo returns nulls for the oldest ~19 days at that range,
 caught by `dq.check_no_nulls`; `60` was verified clean.)
 
+**Trying a better model:** `scripts/compare_forecast_models.py` is a read-only experiment, not
+part of the pipeline - it takes the exact backtest points already sitting in
+`gold.weather_forecast` (from the current per-city `LinearRegression`) and re-predicts the same
+points with a single `HistGradientBoostingRegressor` per metric, trained on **all three cities
+pooled together** (city as a one-hot feature) instead of one model per city. Pooling triples the
+effective training set per fit, and gradient boosting can pick up nonlinear/interaction effects a
+linear model can't. Result on the current history (150 backtest points per metric): the pooled
+model wins on every metric, most on `temp_max_c` (2.31 -> 1.99 MAE) and `precipitation_sum_mm`
+(4.09 -> 3.39 MAE). It isn't wired into `run()`/`gold.weather_forecast` - this is a learning
+exercise in comparing modeling approaches, not a replacement, and the honest baseline to beat is
+Open-Meteo's own forecast, not this backtest.
+
 ## Other deliberate simplifications (learn these next)
 
 - **Full refresh, not incremental.** Silver/gold rebuild from scratch every run. Real pipelines
