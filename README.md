@@ -30,10 +30,13 @@ src/bronze.py            fetches raw API responses, lands them as-is
 src/silver.py             parses bronze JSON into typed, deduplicated rows
 src/gold.py              aggregates silver into daily summaries
 src/forecast.py           trains next-day weather models, predicts tomorrow, walk-forward backtest
-src/dq.py                tiny hand-rolled data quality checks
-run_pipeline.py           orchestrates bronze -> dq -> silver -> dq -> gold -> dq -> forecast -> dq
+src/dq.py                tiny hand-rolled data quality checks (incl. documentation coverage)
+src/catalog.py           publishes semantic_layer.yml into the warehouse (descriptions, metrics, eval view)
+semantic_layer.yml       single definition of gold tables, columns and business metrics
+run_pipeline.py           orchestrates bronze -> dq -> silver -> dq -> gold -> dq -> forecast -> dq -> catalog -> dq
 scripts/backfill_history.py  one-off: seed real historical days so forecast.py has enough to train on
 scripts/backtest.py       one-off/occasional: fill in historical forecast accuracy retroactively
+scripts/compare_forecast_models.py  model experiments, logged to MLflow (local, needs requirements-ml.txt)
 app.py                   Streamlit dashboard over gold/silver/bronze + the forecast
 .github/workflows/pipeline.yml  daily cron (+ manual trigger) that runs run_pipeline.py in CI
 data/weather.duckdb        local DB file, used only when MOTHERDUCK_TOKEN isn't set (gitignored)
@@ -128,17 +131,31 @@ it into silver/gold, then `python scripts/backtest.py` to generate evaluation hi
 (We tried `past_days=90` first - Open-Meteo returns nulls for the oldest ~19 days at that range,
 caught by `dq.check_no_nulls`; `60` was verified clean.)
 
-**Trying a better model:** `scripts/compare_forecast_models.py` is a read-only experiment, not
-part of the pipeline - it takes the exact backtest points already sitting in
-`gold.weather_forecast` (from the current per-city `LinearRegression`) and re-predicts the same
-points with a single `HistGradientBoostingRegressor` per metric, trained on **all three cities
-pooled together** (city as a one-hot feature) instead of one model per city. Pooling triples the
-effective training set per fit, and gradient boosting can pick up nonlinear/interaction effects a
-linear model can't. Result on the current history (150 backtest points per metric): the pooled
-model wins on every metric, most on `temp_max_c` (2.31 -> 1.99 MAE) and `precipitation_sum_mm`
-(4.09 -> 3.39 MAE). It isn't wired into `run()`/`gold.weather_forecast` - this is a learning
-exercise in comparing modeling approaches, not a replacement, and the honest baseline to beat is
-Open-Meteo's own forecast, not this backtest.
+**Model experiments, tracked in MLflow:** `scripts/compare_forecast_models.py` is a read-only
+experiment, not part of the pipeline. It re-predicts the exact backtest points already in
+`gold.weather_forecast` with pooled `HistGradientBoostingRegressor` variants: one model per
+metric, trained on all three cities together (city as a one-hot feature), instead of one model
+per city. Each variant is logged to MLflow with its parameters, per-metric MAE, the raw error
+table, and (automatically) the git commit that produced it.
+
+```bash
+pip install -r requirements-ml.txt   # MLflow is kept out of requirements.txt - CI and the dashboard don't need it
+python scripts/compare_forecast_models.py
+mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5001   # 5000 is usually taken by macOS AirPlay
+```
+
+The sweep is 3 tree depths x 2 feature sets. "basic" is yesterday's value + season; "rich" adds
+the value 2 days ago and a 7-day rolling mean. What it showed, on 150 backtest points per metric:
+- **Pooling does the heavy lifting.** Every pooled variant beats the per-city linear baseline on
+  every metric (e.g. precipitation MAE 4.09 -> ~3.4).
+- **Tree depth barely matters** (differences of 0.01-0.05). Tuning the model's settings is the
+  least valuable knob here.
+- **Richer features help temperature slightly** (min temp 1.62 -> 1.58) **but hurt
+  precipitation** (3.39 -> ~3.7). Rain is spiky, so extra history features let the model fit
+  noise. There's no single best model: the best choice depends on the metric.
+
+None of this is wired into the live forecast. It's a learning exercise in comparing modelling
+approaches, and the honest baseline to beat is Open-Meteo's own forecast, not this backtest.
 
 ## Semantic layer & data catalog
 
