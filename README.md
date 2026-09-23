@@ -195,7 +195,7 @@ column has no description, so a new column can't ship undocumented.
 - **Full refresh, not incremental.** Silver/gold rebuild from scratch every run. Real pipelines
   track a watermark (e.g. "only process bronze rows newer than X") once full-refresh gets slow.
 - **Hand-rolled DQ checks.** `src/dq.py` is a toy version of what dbt tests or Great Expectations
-  do for real. Worth trying once you outgrow this.
+  do for real. Worth trying later.
 - **One feature set, one model type, per metric.** `src/forecast.py` doesn't try alternative
   features (e.g. cross-metric signals, more lags) or model types, or track which version
   predicted what - a real ML pipeline versions both, and would likely reach for something other
