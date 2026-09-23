@@ -73,6 +73,18 @@ tables:
       filter: SQL WHERE condition that must always be applied with this metric.
       unit: Unit of the result.
 
+  gold.lineage_edges:
+    description: >-
+      Data lineage from semantic_layer.yml: one row per dependency edge, showing which node is
+      built from which. Use it to answer "where does this data come from?" or "what breaks if
+      X changes?".
+    columns:
+      upstream: The node data flows from (a table, view, file, or external source).
+      downstream: The node data flows into.
+      upstream_type: source, file, table, view, or consumer.
+      downstream_type: source, file, table, view, or consumer.
+      built_by: Code file that builds the downstream node, if any.
+
 metrics:
   - name: rainy_days
     label: Rainy days
@@ -113,3 +125,64 @@ metrics:
     expression: ROUND(AVG(ABS(predicted_temp_avg_c - actual_temp_avg_c)), 2)
     filter: "TRUE"
     unit: °C
+
+# Lineage: every node and what it's built from. Declared here (the way dbt
+# models declare ref()), then verified against reality on every pipeline run
+# by dq.check_lineage - the warehouse's actual tables, view SQL, and which
+# tables each code file reads - so this can't silently drift from the code.
+lineage:
+  open_meteo_api:
+    type: source
+    label: Open-Meteo API
+  bronze.raw_weather_observations:
+    type: table
+    built_by: src/bronze.py
+    upstream: [open_meteo_api]
+  silver.weather_hourly:
+    type: table
+    built_by: src/silver.py
+    upstream: [bronze.raw_weather_observations]
+  gold.weather_daily_summary:
+    type: table
+    built_by: src/gold.py
+    upstream: [silver.weather_hourly]
+  gold.weather_forecast:
+    type: table
+    built_by: src/forecast.py
+    upstream: [gold.weather_daily_summary]
+  semantic_layer.yml:
+    type: file
+    label: semantic_layer.yml
+  gold.forecast_evaluation:
+    type: view
+    built_by: src/catalog.py
+    upstream: [gold.weather_forecast, gold.weather_daily_summary]
+  gold.metric_definitions:
+    type: table
+    built_by: src/catalog.py
+    upstream: [semantic_layer.yml]
+  gold.lineage_edges:
+    type: table
+    built_by: src/catalog.py
+    upstream: [semantic_layer.yml]
+  dashboard:
+    type: consumer
+    label: Dashboard (weather-app)
+    built_by: app.py
+    upstream:
+      - bronze.raw_weather_observations
+      - silver.weather_hourly
+      - gold.weather_daily_summary
+      - gold.weather_forecast
+      - gold.forecast_evaluation
+      - gold.metric_definitions
+      - gold.lineage_edges
+  weather_agent:
+    type: consumer
+    label: Weather agent (separate repo)
+    upstream:
+      - gold.weather_daily_summary
+      - gold.weather_forecast
+      - gold.forecast_evaluation
+      - gold.metric_definitions
+      - gold.lineage_edges

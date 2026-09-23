@@ -1,5 +1,5 @@
 """
-Orchestrator: bronze -> dq -> silver -> dq -> gold -> dq -> forecast -> dq -> catalog -> dq.
+Orchestrator: bronze -> dq -> silver -> dq -> gold -> dq -> forecast -> dq -> catalog -> dq (docs + lineage).
 
 This is what a scheduler (cron, GitHub Actions, Airflow) would call once
 a day. Each layer is idempotent, so re-running this after a failure never
@@ -7,6 +7,7 @@ corrupts data - it just redoes the work.
 """
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from config import CITIES, get_connection
 from src import bronze, catalog, dq, forecast, gold, silver
@@ -75,6 +76,7 @@ def main() -> None:
     print("Catalog: applying semantic_layer.yml...")
     described = catalog.run(con)
     dq.check_documented(con, "gold")
+    dq.check_lineage(con, catalog.load_semantic_layer()["lineage"], Path(__file__).parent)
     print(f"Catalog done: {described} descriptions applied.\n")
 
     print("Pipeline complete.")

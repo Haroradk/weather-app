@@ -9,7 +9,9 @@ stop the pipeline rather than silently pass bad data downstream.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 
 import duckdb
 
@@ -134,3 +136,54 @@ def check_documented(con: duckdb.DuckDBPyConnection, schema: str) -> None:
     if missing:
         raise DataQualityError(f"Undocumented in {schema} (add to semantic_layer.yml): {missing}")
     print(f"  dq: every {schema} table and column is documented")
+
+
+TABLE_REFERENCE = re.compile(r"\b(?:bronze|silver|gold)\.[a-z_]+\b")
+
+WAREHOUSE_OBJECTS_QUERY = """
+SELECT schema_name, table_name, NULL FROM duckdb_tables() WHERE database_name = current_database()
+UNION ALL
+SELECT schema_name, view_name, sql FROM duckdb_views() WHERE database_name = current_database() AND NOT internal
+"""
+
+
+def check_lineage(con: duckdb.DuckDBPyConnection, lineage: dict, repo_root: Path) -> None:
+    """Governance check: the declared lineage (semantic_layer.yml) must match
+    reality, checked three ways - the warehouse's actual tables/views, the
+    tables each view's SQL actually reads, and the tables each code file in
+    this repo actually references. Declared lineage that nobody verifies
+    quietly rots; this makes a stale declaration fail the pipeline instead."""
+    problems = []
+
+    for node, spec in lineage.items():
+        problems += [f"{node} lists unknown upstream {up}" for up in spec.get("upstream", []) if up not in lineage]
+
+    objects = con.execute(WAREHOUSE_OBJECTS_QUERY).fetchall()
+    actual = {f"{schema}.{name}" for schema, name, _ in objects}
+    declared = {node for node, spec in lineage.items() if spec["type"] in ("table", "view")}
+    problems += [f"{t} exists in the warehouse but isn't in the lineage" for t in sorted(actual - declared)]
+    problems += [f"{t} is in the lineage but not in the warehouse" for t in sorted(declared - actual)]
+
+    for schema, name, view_sql in objects:
+        if view_sql is None:
+            continue
+        view = f"{schema}.{name}"
+        reads = set(TABLE_REFERENCE.findall(view_sql)) - {view}
+        undeclared = reads - set(lineage.get(view, {}).get("upstream", []))
+        problems += [f"view {view} reads {t}, which isn't declared as its upstream" for t in sorted(undeclared)]
+
+    nodes_by_file: dict = {}
+    for node, spec in lineage.items():
+        if spec.get("built_by"):
+            nodes_by_file.setdefault(spec["built_by"], set()).add(node)
+    for path, nodes in nodes_by_file.items():
+        allowed = nodes | {up for node in nodes for up in lineage[node].get("upstream", [])}
+        # Text scanning is a heuristic: only count names that are real tables/
+        # views, so a comment mentioning a column like bronze.fetched_at isn't
+        # mistaken for a table read.
+        referenced = set(TABLE_REFERENCE.findall((repo_root / path).read_text())) & (actual | declared)
+        problems += [f"{path} references {t}, which its lineage doesn't declare" for t in sorted(referenced - allowed)]
+
+    if problems:
+        raise DataQualityError("Lineage out of date (fix semantic_layer.yml):\n  " + "\n  ".join(problems))
+    print(f"  dq: lineage matches the warehouse, view SQL, and code ({len(lineage)} nodes)")

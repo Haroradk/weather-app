@@ -173,6 +173,20 @@ reuses that one definition instead of re-deriving its own.
   dashboard's own join also scored today's not-yet-finished day against Open-Meteo's forecast
   for it, and counted that as the "actual" value. The view keeps only fully settled days.
 
+**Lineage** is declared in the same file: each node (the API, every table/view, the dashboard,
+the agent) lists what it's built from. `catalog.py` publishes it as `gold.lineage_edges`, and the
+dashboard draws it as a diagram in the "Data lineage" expander at the top. Declared lineage
+drifts unless something checks it, so `dq.check_lineage` verifies it against reality on every run:
+- every table/view that actually exists in the warehouse must be in the lineage (and vice versa);
+- each view's real SQL may only read the tables declared as its upstream;
+- each code file in this repo may only reference the tables its lineage entry declares.
+
+That last one scans code text, which is a heuristic: it only counts names that are real
+tables/views, so a comment mentioning a column like `bronze.fetched_at` doesn't count as a read.
+Commercial tools (dbt, Purview) get more exact lineage by parsing compiled SQL or query plans.
+The weather-agent's lineage lives in another repo, so it can't be verified from here. It's
+declared by hand.
+
 `dq.check_documented` is a small governance gate: the pipeline fails if any gold table or
 column has no description, so a new column can't ship undocumented.
 

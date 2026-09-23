@@ -8,6 +8,7 @@ things land in MotherDuck, so every consumer reads one shared definition:
   / duckdb_columns(), in MotherDuck's UI, and to the weather-agent)
 - gold.forecast_evaluation, the predicted-vs-actual join as a view
 - gold.metric_definitions, the business metrics as a queryable table
+- gold.lineage_edges, which node is built from which
 """
 
 from __future__ import annotations
@@ -73,6 +74,22 @@ def run(con: duckdb.DuckDBPyConnection) -> int:
         ]
     )
     con.execute("CREATE OR REPLACE TABLE gold.metric_definitions AS SELECT * FROM metrics_df")
+
+    lineage = layer["lineage"]
+    edges_df = pd.DataFrame(
+        [
+            {
+                "upstream": upstream,
+                "downstream": node,
+                "upstream_type": lineage[upstream]["type"],
+                "downstream_type": spec["type"],
+                "built_by": spec.get("built_by"),
+            }
+            for node, spec in lineage.items()
+            for upstream in spec.get("upstream", [])
+        ]
+    )
+    con.execute("CREATE OR REPLACE TABLE gold.lineage_edges AS SELECT * FROM edges_df")
 
     n_comments = 0
     for table, spec in layer["tables"].items():

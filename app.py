@@ -61,6 +61,29 @@ con = get_dashboard_connection()
 st.title("Weather ETL Pipeline")
 st.caption("Bronze -> Silver -> Gold, served straight out of DuckDB.")
 
+NODE_COLORS = {"source": "#9e9e9e", "file": "#cfd8dc", "consumer": "#90caf9"}
+LAYER_COLORS = {"bronze": "#cd9b6a", "silver": "#c0c4c8", "gold": "#e6c35c"}
+
+with st.expander("Data lineage: how everything on this page is built"):
+    st.caption(
+        "Declared in `semantic_layer.yml`, published to `gold.lineage_edges`, and verified "
+        "against the real warehouse, view SQL, and code on every pipeline run."
+    )
+    edges = con.execute("SELECT upstream, downstream, upstream_type, downstream_type FROM gold.lineage_edges").fetchall()
+    node_types = {}
+    for upstream, downstream, upstream_type, downstream_type in edges:
+        node_types[upstream] = upstream_type
+        node_types[downstream] = downstream_type
+    dot = ['digraph { rankdir=LR; bgcolor="transparent";',
+           'node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, color="#555555"];',
+           'edge [color="#888888"];']
+    for node, node_type in node_types.items():
+        color = LAYER_COLORS.get(node.split(".")[0], NODE_COLORS.get(node_type, "#ffffff"))
+        dot.append(f'"{node}" [fillcolor="{color}"];')
+    dot += [f'"{upstream}" -> "{downstream}";' for upstream, downstream, _, _ in edges]
+    dot.append("}")
+    st.graphviz_chart("\n".join(dot), use_container_width=True)
+
 cities = [row[0] for row in con.execute("SELECT DISTINCT city FROM gold.weather_daily_summary ORDER BY city").fetchall()]
 selected_cities = st.multiselect("Cities", cities, default=cities)
 
