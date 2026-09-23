@@ -1,0 +1,115 @@
+# Semantic layer + data catalog: the single place where gold tables, their
+# columns, and business metrics are described. src/catalog.py applies this
+# to the warehouse on every pipeline run (as DuckDB COMMENTs and a
+# gold.metric_definitions table), so the dashboard, the weather-agent, and
+# anyone browsing MotherDuck all read the same definitions.
+
+tables:
+  gold.weather_daily_summary:
+    description: >-
+      One row per city per day, aggregated from hourly readings. Blends two kinds of rows
+      in the same table: settled history (date <= CURRENT_DATE) and Open-Meteo's own forecast
+      for the next ~7 days (date > CURRENT_DATE). MAX(date) is therefore NOT today - filter
+      date <= CURRENT_DATE for anything about what actually happened.
+    columns:
+      city: City name - one of Copenhagen, London, New York.
+      date: Calendar day (UTC). Rows after CURRENT_DATE are Open-Meteo forecasts, not observations.
+      temp_min_c: Lowest hourly temperature that day, degrees Celsius.
+      temp_max_c: Highest hourly temperature that day, degrees Celsius.
+      temp_avg_c: Mean of the 24 hourly temperatures that day, degrees Celsius.
+      precipitation_sum_mm: Total precipitation that day, millimetres (sum of hourly values).
+      wind_speed_max_kmh: Highest hourly wind speed that day, km/h.
+      updated_at: When the pipeline last rebuilt this row.
+
+  gold.weather_forecast:
+    description: >-
+      Our own ML next-day predictions (not Open-Meteo's forecast). One row per city per
+      target date. is_backtest separates live daily predictions from retroactive walk-forward
+      backtest points.
+    columns:
+      city: City name - one of Copenhagen, London, New York.
+      target_date: The day being predicted.
+      predicted_temp_min_c: Predicted lowest temperature, degrees Celsius.
+      predicted_temp_max_c: Predicted highest temperature, degrees Celsius.
+      predicted_temp_avg_c: Predicted mean temperature, degrees Celsius.
+      predicted_precipitation_sum_mm: Predicted total precipitation, millimetres (clipped at 0).
+      predicted_wind_speed_max_kmh: Predicted highest wind speed, km/h (clipped at 0).
+      model_type: Which model produced the prediction, e.g. linear_regression_v1.
+      training_rows: How many settled days the model was trained on.
+      is_backtest: TRUE = retroactive backtest point, FALSE = real live prediction made the day before.
+      trained_at: When the model was trained (UTC).
+
+  gold.forecast_evaluation:
+    description: >-
+      View pairing each of our predictions with what actually happened. Only fully settled
+      days (target_date < CURRENT_DATE) - today is excluded because its later hours are still
+      forecast, and joining to future rows would compare our forecast against Open-Meteo's.
+    columns:
+      city: City name.
+      target_date: The day that was predicted.
+      is_backtest: TRUE = retroactive backtest point, FALSE = real live prediction.
+      model_type: Which model produced the prediction.
+      predicted_temp_min_c: Predicted lowest temperature, degrees Celsius.
+      actual_temp_min_c: Actual lowest temperature, degrees Celsius.
+      predicted_temp_max_c: Predicted highest temperature, degrees Celsius.
+      actual_temp_max_c: Actual highest temperature, degrees Celsius.
+      predicted_temp_avg_c: Predicted mean temperature, degrees Celsius.
+      actual_temp_avg_c: Actual mean temperature, degrees Celsius.
+      predicted_precipitation_sum_mm: Predicted total precipitation, millimetres.
+      actual_precipitation_sum_mm: Actual total precipitation, millimetres.
+      predicted_wind_speed_max_kmh: Predicted highest wind speed, km/h.
+      actual_wind_speed_max_kmh: Actual highest wind speed, km/h.
+
+  gold.metric_definitions:
+    description: >-
+      Business metric definitions from semantic_layer.yml. To compute a metric:
+      SELECT <group-by columns>, <expression> FROM <table_name> WHERE <filter> GROUP BY ...
+    columns:
+      name: Metric identifier.
+      label: Human-readable name.
+      description: What the metric means, in plain English.
+      table_name: Table or view the metric is computed from.
+      expression: SQL aggregate expression that computes the metric.
+      filter: SQL WHERE condition that must always be applied with this metric.
+      unit: Unit of the result.
+
+metrics:
+  - name: rainy_days
+    label: Rainy days
+    description: Number of days with more than 1 mm of total precipitation.
+    table: gold.weather_daily_summary
+    expression: COUNT(*) FILTER (WHERE precipitation_sum_mm > 1)
+    filter: date <= CURRENT_DATE
+    unit: days
+
+  - name: avg_temperature
+    label: Average temperature
+    description: Mean of daily average temperatures.
+    table: gold.weather_daily_summary
+    expression: ROUND(AVG(temp_avg_c), 1)
+    filter: date <= CURRENT_DATE
+    unit: °C
+
+  - name: total_precipitation
+    label: Total precipitation
+    description: Sum of daily precipitation.
+    table: gold.weather_daily_summary
+    expression: ROUND(SUM(precipitation_sum_mm), 1)
+    filter: date <= CURRENT_DATE
+    unit: mm
+
+  - name: max_wind_speed
+    label: Peak wind speed
+    description: Highest daily max wind speed.
+    table: gold.weather_daily_summary
+    expression: ROUND(MAX(wind_speed_max_kmh), 1)
+    filter: date <= CURRENT_DATE
+    unit: km/h
+
+  - name: forecast_mae_temp_avg
+    label: Forecast error (avg temp)
+    description: Mean absolute error of our average-temperature predictions against what actually happened.
+    table: gold.forecast_evaluation
+    expression: ROUND(AVG(ABS(predicted_temp_avg_c - actual_temp_avg_c)), 2)
+    filter: "TRUE"
+    unit: °C

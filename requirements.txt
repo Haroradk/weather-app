@@ -5,3 +5,4 @@ pandas
 python-dotenv
 scikit-learn
 plotly
+pyyaml

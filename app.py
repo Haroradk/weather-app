@@ -80,6 +80,28 @@ gold_df = con.execute(
     selected_cities,
 ).df()
 
+st.subheader("Key metrics")
+st.caption(
+    "Every number here comes from a definition in `semantic_layer.yml` (published to "
+    "`gold.metric_definitions`) - the same definitions the weather-agent reads. Hover a "
+    "column header for what it means."
+)
+metric_defs = con.execute(
+    "SELECT name, label, description, table_name, expression, filter, unit FROM gold.metric_definitions"
+).df()
+metric_values = pd.DataFrame(index=selected_cities)
+column_config = {}
+for m in metric_defs.itertuples():
+    header = f"{m.label} ({m.unit})"
+    rows = con.execute(
+        f"SELECT city, {m.expression} AS value FROM {m.table_name} "
+        f"WHERE ({m.filter}) AND city IN ({placeholders}) GROUP BY city",
+        selected_cities,
+    ).fetchall()
+    metric_values[header] = pd.Series(dict(rows))
+    column_config[header] = st.column_config.NumberColumn(header, help=m.description)
+st.dataframe(metric_values, use_container_width=True, column_config=column_config)
+
 st.subheader("Daily average temperature")
 line_chart(gold_df, x="date", y="temp_avg_c", color="city")
 
@@ -133,17 +155,8 @@ st.caption(
     "existing settled history, without touching real live predictions)."
 )
 
-metric_select_cols = ", ".join(
-    f"f.predicted_{m}, g.{m} AS actual_{m}" for m in METRICS
-)
 evaluated_df = con.execute(
-    f"""
-    SELECT f.city, f.target_date, f.is_backtest, {metric_select_cols}
-    FROM gold.weather_forecast f
-    JOIN gold.weather_daily_summary g ON f.city = g.city AND f.target_date = g.date
-    WHERE f.city IN ({placeholders})
-    ORDER BY f.target_date
-    """,
+    f"SELECT * FROM gold.forecast_evaluation WHERE city IN ({placeholders}) ORDER BY target_date",
     selected_cities,
 ).df()
 

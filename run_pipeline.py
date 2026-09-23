@@ -1,5 +1,5 @@
 """
-Orchestrator: bronze -> dq -> silver -> dq -> gold -> dq.
+Orchestrator: bronze -> dq -> silver -> dq -> gold -> dq -> forecast -> dq -> catalog -> dq.
 
 This is what a scheduler (cron, GitHub Actions, Airflow) would call once
 a day. Each layer is idempotent, so re-running this after a failure never
@@ -9,7 +9,7 @@ corrupts data - it just redoes the work.
 from datetime import datetime, timezone
 
 from config import CITIES, get_connection
-from src import bronze, dq, forecast, gold, silver
+from src import bronze, catalog, dq, forecast, gold, silver
 
 CITY_NAMES = [city["name"] for city in CITIES]
 
@@ -71,6 +71,11 @@ def main() -> None:
         # history than exists yet (see forecast.MIN_TRAINING_ROWS).
         print("  forecast: no predictions yet - not enough settled history for any city")
     print(f"Forecast done: {predicted} prediction(s).\n")
+
+    print("Catalog: applying semantic_layer.yml...")
+    described = catalog.run(con)
+    dq.check_documented(con, "gold")
+    print(f"Catalog done: {described} descriptions applied.\n")
 
     print("Pipeline complete.")
     con.close()

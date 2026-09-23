@@ -140,6 +140,25 @@ model wins on every metric, most on `temp_max_c` (2.31 -> 1.99 MAE) and `precipi
 exercise in comparing modeling approaches, not a replacement, and the honest baseline to beat is
 Open-Meteo's own forecast, not this backtest.
 
+## Semantic layer & data catalog
+
+`semantic_layer.yml` is the one place where gold tables, their columns, and business metrics
+(e.g. "rainy day = more than 1 mm of precipitation") are defined. It's the same idea as dbt's
+`schema.yml` + metrics, or a Power BI semantic model: define a meaning once, and every consumer
+reuses that one definition instead of re-deriving its own.
+
+`src/catalog.py` runs as the last pipeline step and publishes it into MotherDuck:
+- **Descriptions** as DuckDB `COMMENT`s on every gold table/view/column. It has to re-run every
+  time, because gold is rebuilt with `CREATE OR REPLACE`, which wipes comments.
+- **`gold.metric_definitions`**: each metric's SQL expression, filter, and unit. The dashboard's
+  "Key metrics" table is computed from it, and the weather-agent reads the same table.
+- **`gold.forecast_evaluation`**: the predicted-vs-actual join as a view. Before it existed, the
+  dashboard's own join also scored today's not-yet-finished day against Open-Meteo's forecast
+  for it, and counted that as the "actual" value. The view keeps only fully settled days.
+
+`dq.check_documented` is a small governance gate: the pipeline fails if any gold table or
+column has no description, so a new column can't ship undocumented.
+
 ## Other deliberate simplifications (learn these next)
 
 - **Full refresh, not incremental.** Silver/gold rebuild from scratch every run. Real pipelines

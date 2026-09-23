@@ -107,3 +107,30 @@ def check_freshness(
             f"(limit {max_age_hours}h). The scheduled run may not have executed."
         )
     print(f"  dq: {table}.{timestamp_column} is fresh ({age_hours:.1f}h old, limit {max_age_hours}h)")
+
+
+def check_documented(con: duckdb.DuckDBPyConnection, schema: str) -> None:
+    """Governance check: every table/view and column in the schema must have
+    a description. Catches a new gold column added without updating
+    semantic_layer.yml, which would otherwise leave the agent guessing."""
+    undocumented_tables = [
+        row[0] for row in con.execute(
+            """
+            SELECT table_name FROM duckdb_tables() WHERE database_name = current_database() AND schema_name = ? AND (comment IS NULL OR comment = '')
+            UNION ALL
+            SELECT view_name FROM duckdb_views() WHERE database_name = current_database() AND schema_name = ? AND (comment IS NULL OR comment = '')
+            """,
+            [schema, schema],
+        ).fetchall()
+    ]
+    undocumented_columns = [
+        f"{row[0]}.{row[1]}" for row in con.execute(
+            "SELECT table_name, column_name FROM duckdb_columns() "
+            "WHERE database_name = current_database() AND schema_name = ? AND (comment IS NULL OR comment = '')",
+            [schema],
+        ).fetchall()
+    ]
+    missing = undocumented_tables + undocumented_columns
+    if missing:
+        raise DataQualityError(f"Undocumented in {schema} (add to semantic_layer.yml): {missing}")
+    print(f"  dq: every {schema} table and column is documented")
