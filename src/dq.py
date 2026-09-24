@@ -51,6 +51,14 @@ def check_non_negative(con: duckdb.DuckDBPyConnection, table: str, column: str) 
     print(f"  dq: {table}.{column} has no negative values")
 
 
+def check_range(con: duckdb.DuckDBPyConnection, table: str, column: str, low: float, high: float) -> None:
+    """NULLs pass: for LLM-extracted fields, 'not stated' is a valid answer."""
+    bad = con.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} < ? OR {column} > ?", [low, high]).fetchone()[0]
+    if bad > 0:
+        raise DataQualityError(f"{table}.{column} has {bad} values outside [{low}, {high}].")
+    print(f"  dq: {table}.{column} within [{low}, {high}]")
+
+
 def check_row_count_per_group(
     con: duckdb.DuckDBPyConnection,
     table: str,

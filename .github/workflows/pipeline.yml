@@ -27,6 +27,7 @@ jobs:
         env:
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
           MOTHERDUCK_DATABASE: weather
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           for attempt in 1 2 3; do
             echo "Attempt $attempt of 3"

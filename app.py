@@ -61,7 +61,7 @@ con = get_dashboard_connection()
 st.title("Weather ETL Pipeline")
 st.caption("Bronze -> Silver -> Gold, served straight out of DuckDB.")
 
-NODE_COLORS = {"source": "#9e9e9e", "file": "#cfd8dc", "consumer": "#90caf9"}
+NODE_COLORS = {"source": "#9e9e9e", "service": "#b39ddb", "file": "#cfd8dc", "consumer": "#90caf9"}
 LAYER_COLORS = {"bronze": "#cd9b6a", "silver": "#c0c4c8", "gold": "#e6c35c"}
 
 with st.expander("Data lineage: how everything on this page is built"):
@@ -202,6 +202,24 @@ else:
                 mae = (pair_df[f"predicted_{metric}"] - pair_df[f"actual_{metric}"]).abs().mean()
                 st.caption(f"Mean absolute error: {mae:.2f}")
                 line_chart(pair_df, x="target_date", y=[f"predicted_{metric}", f"actual_{metric}"])
+
+st.subheader("Forecasters vs. our model vs. reality (New York)")
+st.caption(
+    "Unstructured data meeting structured data. National Weather Service forecasters write a "
+    "free-text Area Forecast Discussion several times a day; the pipeline lands it raw, splits it "
+    "into sections, and has an LLM extract the next day's forecast into typed fields - then this "
+    "compares it with our ML model and with what actually happened. 'possible' rain isn't scored, "
+    "and neither is any extraction whose supporting quote couldn't be found in the source text."
+)
+comparison_df = con.execute(
+    """
+    SELECT target_date, forecaster_rain_expected, model_precipitation_sum_mm, actual_precipitation_sum_mm,
+           forecaster_rain_correct, model_rain_correct, forecaster_summary, evidence_verified
+    FROM gold.forecaster_vs_model_vs_actual
+    ORDER BY target_date DESC
+    """
+).df()
+st.dataframe(comparison_df, use_container_width=True, hide_index=True)
 
 with st.expander("Silver: raw hourly readings"):
     hourly_df = con.execute(

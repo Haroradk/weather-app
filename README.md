@@ -31,6 +31,8 @@ src/silver.py             parses bronze JSON into typed, deduplicated rows
 src/gold.py              aggregates silver into daily summaries
 src/forecast.py           trains next-day weather models, predicts tomorrow, walk-forward backtest
 src/dq.py                tiny hand-rolled data quality checks (incl. documentation coverage)
+src/discussion_*.py      unstructured branch: NWS forecaster text -> bronze -> silver (sections, embeddings, LLM extraction) -> gold
+src/llm.py               the pipeline's only Gemini calls (structured extraction + embeddings), with retries
 src/catalog.py           publishes semantic_layer.yml into the warehouse (descriptions, metrics, eval view)
 semantic_layer.yml       single definition of gold tables, columns and business metrics
 run_pipeline.py           orchestrates bronze -> dq -> silver -> dq -> gold -> dq -> forecast -> dq -> catalog -> dq
@@ -156,6 +158,45 @@ the value 2 days ago and a 7-day rolling mean. What it showed, on 150 backtest p
 
 None of this is wired into the live forecast. It's a learning exercise in comparing modelling
 approaches, and the honest baseline to beat is Open-Meteo's own forecast, not this backtest.
+
+## Unstructured data: what forecasters wrote
+
+Everything above is one numeric time series. This second branch brings in free text: the
+**Area Forecast Discussion**, a write-up that National Weather Service forecasters at the New York
+office publish several times a day, e.g. *"A coastal storm likely brings rainfall and gusty winds
+Friday into the weekend..."*. It's free, needs no key, and covers New York only (the NWS is US-only).
+
+| Layer | Table | What happens |
+|---|---|---|
+| Bronze | `bronze.raw_forecast_discussions` | Every discussion, raw and append-only. The API only keeps about 7 days, so this is also the archive. |
+| Silver | `silver.forecast_discussion_sections` | One discussion per day, split into its labelled sections by plain code (no LLM needed), each with a Gemini embedding for semantic search |
+| Silver | `silver.forecast_discussion_extractions` | Gemini reads that discussion and fills a fixed schema for the next day: rain none/possible/likely, temperatures, gusts, hazards, plus a supporting quote |
+| Gold | `gold.forecaster_vs_model_vs_actual` | The forecasters' call vs. our ML model vs. what actually happened |
+
+Design points worth knowing:
+- **Which discussion counts:** the latest one issued before our 06:00 UTC run, i.e. what the
+  forecasters were saying when our model made its prediction. That keeps the comparison fair,
+  and keeps Gemini to one extraction per day.
+- **LLM output is untrusted input.** Structured output guarantees the *shape* (valid JSON, allowed
+  values); nothing guarantees the *content*. So: "return null if not stated" instead of guessing;
+  range checks on every number; and a grounding check - the supporting quote must appear word for
+  word in the source, or the row is kept but not scored.
+- **Incremental, not rebuilt.** Rebuilding silver on every run would re-pay for every embedding and
+  extraction. Only unprocessed days are touched, and a failed day is simply retried next run.
+- **A second source must not take down the first.** An NWS or Gemini failure is logged, not fatal;
+  freshness checks (30h for bronze, 72h for extractions) fail the run only if it persists.
+- **What the text supports decides the analysis.** The discussions talk about temperature in
+  ranges and reasoning ("outlying areas fall into the upper 40s"), rarely a single NYC number, so
+  temperatures are mostly null. Rain expectation is what the text reliably gives, so the metrics
+  (`forecaster_rain_hit_rate` vs. `model_rain_hit_rate`) score rain calls.
+- **Embeddings are 768-number vectors stored in a `FLOAT[768]` column**, and DuckDB's built-in
+  `array_cosine_similarity` searches them. No separate vector database. The weather-agent uses this
+  for its search tool.
+
+Gemini runs on `gemini-3.1-flash-lite` (extraction) and `gemini-embedding-001`. Free-tier limits are
+per model, so this shouldn't eat into the weather-agent's quota. The scheduled run needs a
+`GEMINI_API_KEY` repository secret. Without it, the text branch skips the LLM steps, and after 72
+hours the freshness check fails the run and opens an issue.
 
 ## Semantic layer & data catalog
 

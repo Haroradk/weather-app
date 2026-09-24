@@ -85,6 +85,36 @@ tables:
       downstream_type: source, file, table, view, or consumer.
       built_by: Code file that builds the downstream node, if any.
 
+  gold.forecaster_vs_model_vs_actual:
+    description: >-
+      New York only. One row per target date: what National Weather Service forecasters wrote
+      in their Area Forecast Discussion (extracted by an LLM from free text), what our own ML
+      model predicted, and what actually happened. Actual columns are NULL until the day has
+      fully passed. Caveats - our days are UTC days, forecasters mean New York local days; our
+      wind is max sustained speed while forecasters quote gusts, so the wind columns are not
+      like-for-like.
+    columns:
+      city: Always New York - the NWS only covers the US.
+      target_date: The day being forecast.
+      discussion_issued_at: When the forecaster discussion used was issued (UTC) - the latest one before our 06:00 UTC run the day before.
+      forecaster_rain_expected: none, possible, or likely - forecasters' rain expectation for NYC, extracted from their text.
+      forecaster_temp_max_c: Forecasters' stated NYC high, converted to °C. Usually NULL - the text rarely gives a single NYC number.
+      forecaster_temp_min_c: Forecasters' stated NYC low, converted to °C. Usually NULL.
+      forecaster_wind_gust_max_kmh: Forecasters' stated max wind gust, converted to km/h. NULL if not stated.
+      forecaster_hazards: Hazards the forecasters mention for that day, e.g. coastal flooding.
+      forecaster_summary: One-sentence LLM summary of the forecasters' view of that day.
+      evidence_verified: TRUE if the LLM's supporting quote was found word for word in the source text. Unverified rows are not scored.
+      model_temp_max_c: Our ML model's predicted high, °C.
+      model_temp_min_c: Our ML model's predicted low, °C.
+      model_precipitation_sum_mm: Our ML model's predicted rainfall, mm.
+      model_is_backtest: TRUE if the model value is a retroactive backtest point rather than a live prediction.
+      actual_temp_max_c: Actual high, °C (UTC day).
+      actual_temp_min_c: Actual low, °C (UTC day).
+      actual_precipitation_sum_mm: Actual rainfall, mm (UTC day).
+      actual_wind_speed_max_kmh: Actual max sustained hourly wind speed, km/h - not a gust.
+      forecaster_rain_correct: Did the forecasters' rain call match reality (rainy = more than 1 mm)? NULL for 'possible', unverified evidence, or unsettled days.
+      model_rain_correct: Did our model's rain call (predicted more than 1 mm) match reality? NULL until the day has passed.
+
 metrics:
   - name: rainy_days
     label: Rainy days
@@ -126,6 +156,22 @@ metrics:
     filter: "TRUE"
     unit: °C
 
+  - name: forecaster_rain_hit_rate
+    label: Forecaster rain hit rate
+    description: Share of days where the NWS forecasters' rain call was right. Scored only on days where our model can be scored too, so the two rates are comparable.
+    table: gold.forecaster_vs_model_vs_actual
+    expression: ROUND(AVG(CAST(forecaster_rain_correct AS INTEGER)), 2)
+    filter: forecaster_rain_correct IS NOT NULL AND model_rain_correct IS NOT NULL
+    unit: share of days
+
+  - name: model_rain_hit_rate
+    label: Model rain hit rate
+    description: Share of days where our ML model's rain call was right, on the same days the forecasters are scored.
+    table: gold.forecaster_vs_model_vs_actual
+    expression: ROUND(AVG(CAST(model_rain_correct AS INTEGER)), 2)
+    filter: forecaster_rain_correct IS NOT NULL AND model_rain_correct IS NOT NULL
+    unit: share of days
+
 # Lineage: every node and what it's built from. Declared here (the way dbt
 # models declare ref()), then verified against reality on every pipeline run
 # by dq.check_lineage - the warehouse's actual tables, view SQL, and which
@@ -165,6 +211,28 @@ lineage:
     type: table
     built_by: src/catalog.py
     upstream: [semantic_layer.yml]
+  nws_api:
+    type: source
+    label: NWS forecast discussions
+  gemini_api:
+    type: service
+    label: Gemini (extraction + embeddings)
+  bronze.raw_forecast_discussions:
+    type: table
+    built_by: src/discussion_bronze.py
+    upstream: [nws_api]
+  silver.forecast_discussion_sections:
+    type: table
+    built_by: src/discussion_silver.py
+    upstream: [bronze.raw_forecast_discussions, gemini_api]
+  silver.forecast_discussion_extractions:
+    type: table
+    built_by: src/discussion_silver.py
+    upstream: [bronze.raw_forecast_discussions, gemini_api]
+  gold.forecaster_vs_model_vs_actual:
+    type: view
+    built_by: src/discussion_gold.py
+    upstream: [silver.forecast_discussion_extractions, gold.weather_forecast, gold.weather_daily_summary]
   dashboard:
     type: consumer
     label: Dashboard (weather-app)
@@ -177,6 +245,7 @@ lineage:
       - gold.forecast_evaluation
       - gold.metric_definitions
       - gold.lineage_edges
+      - gold.forecaster_vs_model_vs_actual
   weather_agent:
     type: consumer
     label: Weather agent (separate repo)
@@ -186,3 +255,5 @@ lineage:
       - gold.forecast_evaluation
       - gold.metric_definitions
       - gold.lineage_edges
+      - gold.forecaster_vs_model_vs_actual
+      - silver.forecast_discussion_sections

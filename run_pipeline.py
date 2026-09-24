@@ -10,13 +10,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import CITIES, get_connection
-from src import bronze, catalog, dq, forecast, gold, silver
+import requests
+
+from src import bronze, catalog, discussion_bronze, discussion_gold, discussion_silver, dq, forecast, gold, silver
 
 CITY_NAMES = [city["name"] for city in CITIES]
 
 # Pipeline runs daily; 30h gives slack for scheduler jitter (GitHub Actions
 # cron can slip by tens of minutes under load) without masking a real gap.
 MAX_STALENESS_HOURS = 30
+
+# Extraction runs once a day and retries missed days, so a gap of more than
+# ~3 days means something is persistently wrong (quota, missing key, bad model
+# name) rather than a one-off hiccup.
+MAX_EXTRACTION_LAG_HOURS = 72
 
 
 def main() -> None:
@@ -72,6 +79,31 @@ def main() -> None:
         # history than exists yet (see forecast.MIN_TRAINING_ROWS).
         print("  forecast: no predictions yet - not enough settled history for any city")
     print(f"Forecast done: {predicted} prediction(s).\n")
+
+    print("Discussions: forecasters' text from the National Weather Service...")
+    # A second, independent source: an NWS or Gemini hiccup is logged, not
+    # fatal, so it can't take the weather data down with it. Staleness is
+    # still caught - the freshness/lag checks below fail if it persists.
+    try:
+        landed_text = discussion_bronze.run(con)
+        print(f"  discussions: {landed_text} new discussion(s) landed")
+    except requests.RequestException as e:
+        print(f"  discussions: NWS fetch failed, will retry next run ({e})")
+    dq.check_not_empty(con, "bronze.raw_forecast_discussions")
+    dq.check_freshness(con, "bronze.raw_forecast_discussions", "issued_at", MAX_STALENESS_HOURS)
+    discussion_silver.run(con)
+    dq.check_not_empty(con, "silver.forecast_discussion_extractions")
+    dq.check_freshness(con, "silver.forecast_discussion_extractions", "issued_at", MAX_EXTRACTION_LAG_HOURS)
+    dq.check_range(con, "silver.forecast_discussion_extractions", "high_temp_f", -40, 125)
+    dq.check_range(con, "silver.forecast_discussion_extractions", "low_temp_f", -40, 125)
+    dq.check_range(con, "silver.forecast_discussion_extractions", "max_wind_gust_mph", 0, 200)
+    dq.check_range(con, "silver.forecast_discussion_extractions", "rain_amount_inches_max", 0, 30)
+    unverified = con.execute(
+        "SELECT COUNT(*) FROM silver.forecast_discussion_extractions WHERE NOT evidence_verified"
+    ).fetchone()[0]
+    print(f"  dq: {unverified} extraction(s) with unverified evidence (kept, but not scored in gold)")
+    compared = discussion_gold.run(con)
+    print(f"Discussions done: {compared} day(s) in gold.forecaster_vs_model_vs_actual.\n")
 
     print("Catalog: applying semantic_layer.yml...")
     described = catalog.run(con)

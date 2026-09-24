@@ -29,6 +29,22 @@ PAST_DAYS = 2
 FORECAST_DAYS = 7
 
 
+# National Weather Service text products - free, no key, but asks for an
+# identifying User-Agent: https://www.weather.gov/documentation/services-web-api
+NWS_API_URL = "https://api.weather.gov"
+NWS_FORECAST_OFFICE = "OKX"  # NWS New York, NY office - covers New York City
+NWS_USER_AGENT = "weather-etl-pipeline learning project (github.com/Haroradk/weather-app)"
+
+# Gemini is used by the pipeline for two things: extracting structured fields
+# from forecasters' text, and embeddings for semantic search. Free-tier
+# limits are counted per model, so a separate lite model here keeps the
+# pipeline from eating the weather-agent's daily quota.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_EXTRACTION_MODEL = "gemini-3.1-flash-lite"
+GEMINI_EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_DIMENSIONS = 768
+
+
 def get_connection(read_only: bool = False) -> duckdb.DuckDBPyConnection:
     """MotherDuck when MOTHERDUCK_TOKEN is set (cloud), else the local file."""
     if MOTHERDUCK_TOKEN:
