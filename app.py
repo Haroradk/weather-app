@@ -61,8 +61,47 @@ con = get_dashboard_connection()
 st.title("Weather ETL Pipeline")
 st.caption("Bronze -> Silver -> Gold, served straight out of DuckDB.")
 
+LIGHTS = {"success": "🟢", "pass": "🟢", "warning": "🟡", "warn": "🟡", "failed": "🔴", "fail": "🔴"}
+
+st.subheader("Pipeline health")
+has_run_log = con.execute(
+    "SELECT COUNT(*) FROM duckdb_tables() WHERE database_name = current_database() "
+    "AND schema_name = 'ops' AND table_name = 'pipeline_runs'"
+).fetchone()[0]
+runs_df = (
+    con.execute("SELECT * FROM ops.pipeline_runs ORDER BY started_at DESC LIMIT 14").df() if has_run_log else pd.DataFrame()
+)
+if runs_df.empty:
+    st.info("No recorded pipeline runs yet - the next run will record its checks here.")
+else:
+    latest = runs_df.iloc[0]
+    duration = (latest["finished_at"] - latest["started_at"]).total_seconds()
+    st.markdown(
+        f"### {LIGHTS.get(latest['status'], '⚪')} Latest run: **{latest['status']}**\n"
+        f"{latest['started_at']:%Y-%m-%d %H:%M} UTC · {duration:.0f}s · triggered by {latest['triggered_by']} · "
+        f"{latest['n_pass']} passed, {latest['n_warn']} warned, {latest['n_fail']} failed"
+    )
+    if latest["error"]:
+        st.error(f"Stopped by: {latest['error']}")
+    st.caption(
+        "Orchestration (GitHub Actions) answers *did the job run*; these checks answer *is the data "
+        "right*. 🟢 passed · 🟡 worth a look but didn't stop the run (a skipped source, data past half "
+        "its freshness limit, unverified LLM evidence) · 🔴 failed and stopped the run."
+    )
+    checks_df = con.execute(
+        "SELECT step, check_name, target, status, detail FROM ops.dq_results WHERE run_id = ? ORDER BY checked_at",
+        [latest["run_id"]],
+    ).df()
+    checks_df.insert(0, "", checks_df["status"].map(LIGHTS))
+    with st.expander(f"All {len(checks_df)} checks in the latest run", expanded=bool(latest["n_warn"] or latest["n_fail"])):
+        st.dataframe(checks_df.drop(columns="status"), use_container_width=True, hide_index=True)
+    with st.expander("Recent runs"):
+        history_df = runs_df[["started_at", "status", "n_pass", "n_warn", "n_fail", "triggered_by", "error"]].copy()
+        history_df.insert(0, "", history_df["status"].map(LIGHTS))
+        st.dataframe(history_df, use_container_width=True, hide_index=True)
+
 NODE_COLORS = {"source": "#9e9e9e", "service": "#b39ddb", "file": "#cfd8dc", "consumer": "#90caf9"}
-LAYER_COLORS = {"bronze": "#cd9b6a", "silver": "#c0c4c8", "gold": "#e6c35c"}
+LAYER_COLORS = {"bronze": "#cd9b6a", "silver": "#c0c4c8", "gold": "#e6c35c", "ops": "#a5d6a7"}
 
 with st.expander("Data lineage: how everything on this page is built"):
     st.caption(

@@ -115,6 +115,32 @@ tables:
       forecaster_rain_correct: Did the forecasters' rain call match reality (rainy = more than 1 mm)? NULL for 'possible', unverified evidence, or unsettled days.
       model_rain_correct: Did our model's rain call (predicted more than 1 mm) match reality? NULL until the day has passed.
 
+  ops.pipeline_runs:
+    description: >-
+      Operational metadata, not weather data - one row per pipeline run (each GitHub Actions retry
+      attempt is its own run). Feeds the dashboard's pipeline health lights.
+    columns:
+      run_id: Run identifier (its start time, UTC).
+      started_at: When the run started (UTC).
+      finished_at: When the run finished or failed (UTC).
+      status: success (all checks passed), warning (at least one check warned), or failed (a step or check stopped the run).
+      n_pass: Number of checks that passed.
+      n_warn: Number of checks that warned.
+      n_fail: Number of checks that failed (0 or 1 - the first failure stops the run).
+      error: The error that stopped the run, if it failed.
+      triggered_by: schedule, workflow_dispatch (manual button), or local.
+
+  ops.dq_results:
+    description: One row per data quality check per pipeline run - pass, warn, or fail, with the detail.
+    columns:
+      run_id: The run this check belongs to (joins to ops.pipeline_runs).
+      checked_at: When the check ran (UTC).
+      step: Pipeline step the check belongs to - bronze, silver, gold, forecast, discussions, catalog.
+      check_name: Which check, e.g. check_freshness.
+      target: The table, schema, or thing checked.
+      status: pass, warn, or fail.
+      detail: What the check found, in words.
+
 metrics:
   - name: rainy_days
     label: Rainy days
@@ -233,6 +259,12 @@ lineage:
     type: view
     built_by: src/discussion_gold.py
     upstream: [silver.forecast_discussion_extractions, gold.weather_forecast, gold.weather_daily_summary]
+  ops.pipeline_runs:
+    type: table
+    built_by: src/dq.py
+  ops.dq_results:
+    type: table
+    built_by: src/dq.py
   dashboard:
     type: consumer
     label: Dashboard (weather-app)
@@ -246,6 +278,8 @@ lineage:
       - gold.metric_definitions
       - gold.lineage_edges
       - gold.forecaster_vs_model_vs_actual
+      - ops.pipeline_runs
+      - ops.dq_results
   weather_agent:
     type: consumer
     label: Weather agent (separate repo)

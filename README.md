@@ -198,6 +198,21 @@ per model, so this shouldn't eat into the weather-agent's quota. The scheduled r
 `GEMINI_API_KEY` repository secret. Without it, the text branch skips the LLM steps, and after 72
 hours the freshness check fails the run and opens an issue.
 
+## Pipeline health (traffic lights)
+
+Orchestration (GitHub Actions) tells you whether the job *ran*. Data quality checks tell you
+whether the data is *right*. Every check reports through `dq.passed()` / `dq.warn()` / `dq.fail()`,
+and the run saves its results to an `ops` schema: `ops.pipeline_runs` (one row per run) and
+`ops.dq_results` (one row per check). The results are saved in a `finally` block, so a failed run is
+recorded too. The dashboard's "Pipeline health" section reads them:
+- 🟢 **pass**
+- 🟡 **warn**: worth a look, but doesn't stop the run. Examples: a skipped source (NWS or Gemini
+  unavailable), data past half its freshness limit, an LLM extraction with unverified evidence.
+- 🔴 **fail**: stops the run, and GitHub Actions retries and then opens an issue, as before.
+
+`ops` holds metadata about the pipeline, not weather data, so it sits outside bronze/silver/gold.
+It's still documented and declared in the lineage like everything else.
+
 ## Semantic layer & data catalog
 
 `semantic_layer.yml` is the one place where gold tables, their columns, and business metrics

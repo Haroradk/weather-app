@@ -9,30 +9,116 @@ stop the pipeline rather than silently pass bad data downstream.
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 
 
 class DataQualityError(Exception):
     pass
 
 
+# --- Recording results -------------------------------------------------------
+# Every check reports through passed()/warn()/fail() instead of just printing,
+# so a run leaves a record behind: ops.pipeline_runs (one row per run) and
+# ops.dq_results (one row per check). That's what the dashboard's traffic
+# lights read. `ops` is operational metadata about the pipeline itself, not
+# part of the data product, so it deliberately sits outside bronze/silver/gold.
+
+CREATE_RUNS = """
+CREATE TABLE IF NOT EXISTS ops.pipeline_runs (
+    run_id VARCHAR, started_at TIMESTAMP, finished_at TIMESTAMP, status VARCHAR,
+    n_pass INTEGER, n_warn INTEGER, n_fail INTEGER, error VARCHAR, triggered_by VARCHAR
+);
+"""
+CREATE_RESULTS = """
+CREATE TABLE IF NOT EXISTS ops.dq_results (
+    run_id VARCHAR, checked_at TIMESTAMP, step VARCHAR, check_name VARCHAR,
+    target VARCHAR, status VARCHAR, detail VARCHAR
+);
+"""
+
+_run = {"run_id": None, "started_at": None, "step": None, "results": []}
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def start_run(con: duckdb.DuckDBPyConnection, started_at: datetime) -> None:
+    # Created up front (not at the end) so the catalog step can document them
+    # and the lineage check sees them in the same run.
+    con.execute("CREATE SCHEMA IF NOT EXISTS ops")
+    con.execute(CREATE_RUNS)
+    con.execute(CREATE_RESULTS)
+    _run.update(run_id=started_at.strftime("%Y%m%dT%H%M%S"), started_at=started_at, step=None, results=[])
+
+
+def set_step(step: str) -> None:
+    """Labels the checks that follow (bronze, silver, ...) for grouping on the dashboard."""
+    _run["step"] = step
+
+
+def _record(check: str, target: str, status: str, detail: str) -> None:
+    _run["results"].append(
+        {"run_id": _run["run_id"], "checked_at": _now(), "step": _run["step"], "check_name": check,
+         "target": target, "status": status, "detail": detail}
+    )
+    print(f"  dq [{status}]: {detail}")
+
+
+def passed(check: str, target: str, detail: str) -> None:
+    _record(check, target, "pass", detail)
+
+
+def warn(check: str, target: str, detail: str) -> None:
+    """Something to look at, but not wrong enough to stop the run."""
+    _record(check, target, "warn", detail)
+
+
+def fail(check: str, target: str, detail: str) -> None:
+    _record(check, target, "fail", detail)
+    raise DataQualityError(detail)
+
+
+def finish_run(con: duckdb.DuckDBPyConnection, error: str | None = None) -> str:
+    """Saves the run and all its check results. Called from a `finally`, so a
+    failed run is recorded too - that's the run you most need to see."""
+    results = _run["results"]
+    counts = {s: sum(1 for r in results if r["status"] == s) for s in ("pass", "warn", "fail")}
+    status = "failed" if error else ("warning" if counts["warn"] else "success")
+    con.execute("CREATE SCHEMA IF NOT EXISTS ops")
+    con.execute(CREATE_RUNS)
+    con.execute(CREATE_RESULTS)
+    run_df = pd.DataFrame([{
+        "run_id": _run["run_id"], "started_at": _run["started_at"], "finished_at": _now(), "status": status,
+        "n_pass": counts["pass"], "n_warn": counts["warn"], "n_fail": counts["fail"], "error": error,
+        "triggered_by": os.environ.get("GITHUB_EVENT_NAME", "local"),
+    }])
+    con.execute("INSERT INTO ops.pipeline_runs SELECT * FROM run_df")
+    if results:
+        results_df = pd.DataFrame(results)
+        con.execute("INSERT INTO ops.dq_results SELECT * FROM results_df")
+    return status
+
+
 def check_not_empty(con: duckdb.DuckDBPyConnection, table: str) -> None:
     count = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     if count == 0:
-        raise DataQualityError(f"{table} is empty.")
-    print(f"  dq: {table} has {count} rows")
+        fail("check_not_empty", table, f"{table} is empty.")
+    passed("check_not_empty", table, f"{table} has {count} rows")
 
 
 def check_no_nulls(con: duckdb.DuckDBPyConnection, table: str, columns: list[str]) -> None:
     for column in columns:
         bad = con.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} IS NULL").fetchone()[0]
         if bad > 0:
-            raise DataQualityError(f"{table}.{column} has {bad} NULL values.")
-    print(f"  dq: {table} has no NULLs in {columns}")
+            fail("check_no_nulls", table, f"{table}.{column} has {bad} NULL values.")
+    passed("check_no_nulls", table, f"{table} has no NULLs in {columns}")
 
 
 def check_temperature_range(con: duckdb.DuckDBPyConnection, table: str, column: str) -> None:
@@ -40,23 +126,23 @@ def check_temperature_range(con: duckdb.DuckDBPyConnection, table: str, column: 
         f"SELECT COUNT(*) FROM {table} WHERE {column} < -90 OR {column} > 60"
     ).fetchone()[0]
     if bad > 0:
-        raise DataQualityError(f"{table}.{column} has {bad} physically implausible values.")
-    print(f"  dq: {table}.{column} within plausible range")
+        fail("check_temperature_range", table, f"{table}.{column} has {bad} physically implausible values.")
+    passed("check_temperature_range", table, f"{table}.{column} within plausible range")
 
 
 def check_non_negative(con: duckdb.DuckDBPyConnection, table: str, column: str) -> None:
     bad = con.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} < 0").fetchone()[0]
     if bad > 0:
-        raise DataQualityError(f"{table}.{column} has {bad} negative values (e.g. precipitation, wind speed can't be negative).")
-    print(f"  dq: {table}.{column} has no negative values")
+        fail("check_non_negative", table, f"{table}.{column} has {bad} negative values (e.g. precipitation, wind speed can't be negative).")
+    passed("check_non_negative", table, f"{table}.{column} has no negative values")
 
 
 def check_range(con: duckdb.DuckDBPyConnection, table: str, column: str, low: float, high: float) -> None:
     """NULLs pass: for LLM-extracted fields, 'not stated' is a valid answer."""
     bad = con.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} < ? OR {column} > ?", [low, high]).fetchone()[0]
     if bad > 0:
-        raise DataQualityError(f"{table}.{column} has {bad} values outside [{low}, {high}].")
-    print(f"  dq: {table}.{column} within [{low}, {high}]")
+        fail("check_range", table, f"{table}.{column} has {bad} values outside [{low}, {high}].")
+    passed("check_range", table, f"{table}.{column} within [{low}, {high}]")
 
 
 def check_row_count_per_group(
@@ -83,10 +169,10 @@ def check_row_count_per_group(
     missing = [g for g in expected_groups if counts.get(g, 0) < min_count]
     if missing:
         scope = f" (where {where_sql})" if where_sql else ""
-        raise DataQualityError(
+        fail("check_row_count_per_group", table, 
             f"{table} has fewer than {min_count} row(s) for {group_column} = {missing}{scope}."
         )
-    print(f"  dq: {table} has >= {min_count} row(s) for every {group_column} in {expected_groups}")
+    passed("check_row_count_per_group", table, f"{table} has >= {min_count} row(s) for every {group_column} in {expected_groups}")
 
 
 def check_freshness(
@@ -107,16 +193,20 @@ def check_freshness(
     """
     newest = con.execute(f"SELECT MAX({timestamp_column}) FROM {table}").fetchone()[0]
     if newest is None:
-        raise DataQualityError(f"{table}.{timestamp_column} has no rows to check freshness on.")
+        fail("check_freshness", table, f"{table}.{timestamp_column} has no rows to check freshness on.")
 
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     age_hours = (now_utc - newest).total_seconds() / 3600
     if age_hours > max_age_hours:
-        raise DataQualityError(
+        fail("check_freshness", table, 
             f"{table}.{timestamp_column} is stale: newest value is {age_hours:.1f}h old "
             f"(limit {max_age_hours}h). The scheduled run may not have executed."
         )
-    print(f"  dq: {table}.{timestamp_column} is fresh ({age_hours:.1f}h old, limit {max_age_hours}h)")
+    detail = f"{table}.{timestamp_column} is {age_hours:.1f}h old (limit {max_age_hours}h)"
+    if age_hours > max_age_hours / 2:
+        warn("check_freshness", table, detail + " - past half its allowed age")
+    else:
+        passed("check_freshness", table, detail)
 
 
 def check_documented(con: duckdb.DuckDBPyConnection, schema: str) -> None:
@@ -142,8 +232,8 @@ def check_documented(con: duckdb.DuckDBPyConnection, schema: str) -> None:
     ]
     missing = undocumented_tables + undocumented_columns
     if missing:
-        raise DataQualityError(f"Undocumented in {schema} (add to semantic_layer.yml): {missing}")
-    print(f"  dq: every {schema} table and column is documented")
+        fail("check_documented", schema, f"Undocumented in {schema} (add to semantic_layer.yml): {missing}")
+    passed("check_documented", schema, f"every {schema} table and column is documented")
 
 
 TABLE_REFERENCE = re.compile(r"\b(?:bronze|silver|gold)\.[a-z_]+\b")
@@ -193,5 +283,15 @@ def check_lineage(con: duckdb.DuckDBPyConnection, lineage: dict, repo_root: Path
         problems += [f"{path} references {t}, which its lineage doesn't declare" for t in sorted(referenced - allowed)]
 
     if problems:
-        raise DataQualityError("Lineage out of date (fix semantic_layer.yml):\n  " + "\n  ".join(problems))
-    print(f"  dq: lineage matches the warehouse, view SQL, and code ({len(lineage)} nodes)")
+        fail("check_lineage", "lineage", "Lineage out of date (fix semantic_layer.yml):\n  " + "\n  ".join(problems))
+    passed("check_lineage", "lineage", f"lineage matches the warehouse, view SQL, and code ({len(lineage)} nodes)")
+
+
+def check_evidence_verified(con: duckdb.DuckDBPyConnection, table: str) -> None:
+    """LLM grounding: rows whose supporting quote wasn't found in the source are
+    kept but unscored - worth a look (yellow), not a reason to stop (red)."""
+    unverified = con.execute(f"SELECT COUNT(*) FROM {table} WHERE NOT evidence_verified").fetchone()[0]
+    if unverified:
+        warn("check_evidence_verified", table, f"{unverified} extraction(s) in {table} have unverified evidence (kept, not scored)")
+    else:
+        passed("check_evidence_verified", table, f"every extraction in {table} has verified evidence")

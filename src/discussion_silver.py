@@ -28,7 +28,7 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from config import EMBEDDING_DIMENSIONS, GEMINI_EMBEDDING_MODEL, GEMINI_EXTRACTION_MODEL, get_connection
-from src import llm
+from src import dq, llm
 
 RUN_CUTOFF = time(6, 0)  # matches the daily GitHub Actions schedule (06:00 UTC)
 MIN_SECTION_CHARS = 40
@@ -206,7 +206,7 @@ def run(con: duckdb.DuckDBPyConnection) -> int:
     con.execute(CREATE_SECTIONS)
     con.execute(CREATE_EXTRACTIONS)
     if not llm.is_available():
-        print("  discussions: GEMINI_API_KEY not set - skipping extraction and embeddings")
+        dq.warn("gemini_available", "silver.forecast_discussion_extractions", "GEMINI_API_KEY not set - extraction and embeddings skipped")
         return 0
 
     bronze_df = con.execute("SELECT product_id, issued_at, raw_json FROM bronze.raw_forecast_discussions").df()
@@ -222,7 +222,8 @@ def run(con: duckdb.DuckDBPyConnection) -> int:
         try:
             sections_df, extraction_df = _process_day(pick, product_text)
         except Exception as e:
-            print(f"  discussions: skipping {pick['run_date']} for now ({type(e).__name__}: {str(e)[:120]})")
+            dq.warn("discussion_extraction", "silver.forecast_discussion_extractions",
+                    f"{pick['run_date']} skipped, retried next run ({type(e).__name__}: {str(e)[:120]})")
             continue
         # Delete-then-insert per product keeps a half-finished earlier
         # attempt from leaving duplicate sections behind.

@@ -30,7 +30,25 @@ def main() -> None:
     con = get_connection()
     # Naive-but-UTC, matching how bronze.fetched_at is stored (see bronze.py).
     run_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    dq.start_run(con, run_started_at)
+    error = None
+    try:
+        run_steps(con, run_started_at)
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        # Recorded even when a step blew up - a failed run is the one the
+        # dashboard most needs to show. The exception still propagates, so
+        # the GitHub Actions retry and failure alert behave exactly as before.
+        status = dq.finish_run(con, error)
+        print(f"Run recorded as '{status}' in ops.pipeline_runs.")
+        con.close()
 
+
+def run_steps(con, run_started_at: datetime) -> None:
+
+    dq.set_step("bronze")
     print("Bronze: fetching raw weather data...")
     landed = bronze.run(con)
     dq.check_not_empty(con, "bronze.raw_weather_observations")
@@ -43,6 +61,7 @@ def main() -> None:
     dq.check_freshness(con, "bronze.raw_weather_observations", "fetched_at", MAX_STALENESS_HOURS)
     print(f"Bronze done: {landed} responses landed.\n")
 
+    dq.set_step("silver")
     print("Silver: parsing and deduplicating...")
     loaded = silver.run(con)
     dq.check_not_empty(con, "silver.weather_hourly")
@@ -50,6 +69,7 @@ def main() -> None:
     dq.check_temperature_range(con, "silver.weather_hourly", "temperature_c")
     print(f"Silver done: {loaded} hourly rows.\n")
 
+    dq.set_step("gold")
     print("Gold: building daily summary...")
     summarized = gold.run(con)
     dq.check_not_empty(con, "gold.weather_daily_summary")
@@ -61,6 +81,7 @@ def main() -> None:
     )
     print(f"Gold done: {summarized} daily rows.\n")
 
+    dq.set_step("forecast")
     print("Forecast: training and predicting tomorrow's weather...")
     predicted = forecast.run(con)
     if predicted:
@@ -77,9 +98,10 @@ def main() -> None:
     else:
         # Not a failure: every city just needs more accumulated settled
         # history than exists yet (see forecast.MIN_TRAINING_ROWS).
-        print("  forecast: no predictions yet - not enough settled history for any city")
+        dq.warn("forecast_produced", "gold.weather_forecast", "no predictions yet - not enough settled history for any city")
     print(f"Forecast done: {predicted} prediction(s).\n")
 
+    dq.set_step("discussions")
     print("Discussions: forecasters' text from the National Weather Service...")
     # A second, independent source: an NWS or Gemini hiccup is logged, not
     # fatal, so it can't take the weather data down with it. Staleness is
@@ -88,7 +110,7 @@ def main() -> None:
         landed_text = discussion_bronze.run(con)
         print(f"  discussions: {landed_text} new discussion(s) landed")
     except requests.RequestException as e:
-        print(f"  discussions: NWS fetch failed, will retry next run ({e})")
+        dq.warn("nws_fetch", "bronze.raw_forecast_discussions", f"NWS fetch failed, will retry next run ({e})")
     dq.check_not_empty(con, "bronze.raw_forecast_discussions")
     dq.check_freshness(con, "bronze.raw_forecast_discussions", "issued_at", MAX_STALENESS_HOURS)
     discussion_silver.run(con)
@@ -98,21 +120,19 @@ def main() -> None:
     dq.check_range(con, "silver.forecast_discussion_extractions", "low_temp_f", -40, 125)
     dq.check_range(con, "silver.forecast_discussion_extractions", "max_wind_gust_mph", 0, 200)
     dq.check_range(con, "silver.forecast_discussion_extractions", "rain_amount_inches_max", 0, 30)
-    unverified = con.execute(
-        "SELECT COUNT(*) FROM silver.forecast_discussion_extractions WHERE NOT evidence_verified"
-    ).fetchone()[0]
-    print(f"  dq: {unverified} extraction(s) with unverified evidence (kept, but not scored in gold)")
+    dq.check_evidence_verified(con, "silver.forecast_discussion_extractions")
     compared = discussion_gold.run(con)
     print(f"Discussions done: {compared} day(s) in gold.forecaster_vs_model_vs_actual.\n")
 
+    dq.set_step("catalog")
     print("Catalog: applying semantic_layer.yml...")
     described = catalog.run(con)
     dq.check_documented(con, "gold")
+    dq.check_documented(con, "ops")
     dq.check_lineage(con, catalog.load_semantic_layer()["lineage"], Path(__file__).parent)
     print(f"Catalog done: {described} descriptions applied.\n")
 
     print("Pipeline complete.")
-    con.close()
 
 
 if __name__ == "__main__":
