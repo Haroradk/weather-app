@@ -107,7 +107,7 @@ with st.container(border=True):
         if latest["error"]:
             st.error(f"The latest run stopped: {latest['error']}")
 
-tab_weather, tab_ml, tab_pipeline, tab_data = st.tabs(["Weather", "Forecasts & ML", "Pipeline", "Data & governance"])
+tab_weather, tab_ml, tab_pipeline, tab_data = st.tabs(["**Weather**", "**Forecasts & ML**", "**Pipeline**", "**Data & governance**"])
 
 metric_defs = con.execute(
     "SELECT name, label, description, table_name, expression, filter, unit FROM gold.metric_definitions"
