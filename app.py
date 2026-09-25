@@ -31,6 +31,8 @@ except Exception:
 import config
 
 st.set_page_config(page_title="Weather data platform", page_icon="\U0001F326", layout="wide")
+# Streamlit has no size option for tab labels, so a little CSS bumps them up.
+st.markdown("<style>button[data-baseweb='tab'] p {font-size: 1.1rem;}</style>", unsafe_allow_html=True)
 
 # scrollZoom: drag-to-zoom is on by default in Plotly, but scroll-wheel/pinch
 # zoom isn't unless enabled explicitly. displaylogo=False just hides the
@@ -107,7 +109,9 @@ with st.container(border=True):
         if latest["error"]:
             st.error(f"The latest run stopped: {latest['error']}")
 
-tab_weather, tab_ml, tab_pipeline, tab_data = st.tabs(["**Weather**", "**Forecasts & ML**", "**Pipeline**", "**Data & governance**"])
+tab_weather, tab_ml, tab_pipeline, tab_data = st.tabs(
+    ["\U0001F326 **Weather**", "\U0001F4C8 **Forecasts & ML**", "\u2699\ufe0f **Pipeline**", "\U0001F5C2 **Data & governance**"]
+)
 
 metric_defs = con.execute(
     "SELECT name, label, description, table_name, expression, filter, unit FROM gold.metric_definitions"
