@@ -1,0 +1,9 @@
+# Immeo brand palette. Also forces light mode for every visitor, so the
+# dashboard looks the same regardless of their system theme.
+[theme]
+base = "light"
+primaryColor = "#00412D"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F0F0"
+textColor = "#00412D"
+font = "sans serif"

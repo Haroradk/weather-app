@@ -74,8 +74,13 @@ source .venv/bin/activate
 streamlit run app.py
 ```
 
-Opens at http://localhost:8501. Reads gold (charts + table), with silver and bronze
-available in collapsed expanders further down the page.
+Opens at http://localhost:8501. A status line at the top shows the latest run's traffic light,
+with four tabs below it: **Weather** (metric tiles computed from the semantic layer, and charts),
+**Forecasts & ML** (tomorrow's prediction, accuracy, and forecasters vs. model), **Pipeline** (every
+check from the latest run, and the run history), and **Data & governance** (lineage, metric
+definitions, a browsable data catalog, and the raw silver and bronze tables). The city filter is in the
+sidebar. `.streamlit/config.toml` applies the Immeo colours and forces light mode. Run
+`streamlit run app.py` from this folder, so Streamlit finds that file.
 
 ## Cloud setup (done)
 
