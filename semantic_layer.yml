@@ -96,7 +96,7 @@ tables:
     columns:
       city: Always New York - the NWS only covers the US.
       target_date: The day being forecast.
-      discussion_issued_at: When the forecaster discussion used was issued (UTC) - the latest one before our 06:00 UTC run the day before.
+      discussion_issued_at: When the forecaster discussion used was issued (UTC) - the latest one issued before 05:00 UTC, just before our daily run the day before.
       forecaster_rain_expected: none, possible, or likely - forecasters' rain expectation for NYC, extracted from their text.
       forecaster_temp_max_c: Forecasters' stated NYC high, converted to °C. Usually NULL - the text rarely gives a single NYC number.
       forecaster_temp_min_c: Forecasters' stated NYC low, converted to °C. Usually NULL.

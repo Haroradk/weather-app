@@ -76,7 +76,7 @@ with st.sidebar:
     st.divider()
     st.caption(
         "Weather data from Open-Meteo and forecaster texts from the US National Weather Service, "
-        "run through bronze, silver and gold in MotherDuck every morning at 06:00 UTC."
+        "run through bronze, silver and gold in MotherDuck every morning around 05:17 UTC."
     )
 
 if not selected_cities:

@@ -2,9 +2,9 @@
 Silver for unstructured text: bronze's raw discussions turned into
 queryable data, in three steps with very different costs:
 
-1. Pick one discussion per day - the latest one issued before our daily
-   06:00 UTC run, i.e. what the forecasters were saying when our own model
-   made its prediction. That keeps the human-vs-model comparison fair, and
+1. Pick one discussion per day - the latest one issued before 05:00 UTC,
+   just before our daily run, i.e. what the forecasters were saying when our
+   own model made its prediction. That keeps the human-vs-model comparison fair, and
    keeps the Gemini cost at one extraction per day. Bronze keeps all ~8.
 2. Split it into its labelled sections (.KEY MESSAGES, .DISCUSSION, ...)
    with plain code. The text is semi-structured, so no LLM is needed here -
@@ -30,7 +30,10 @@ from pydantic import BaseModel, Field
 from config import EMBEDDING_DIMENSIONS, GEMINI_EMBEDDING_MODEL, GEMINI_EXTRACTION_MODEL, get_connection
 from src import dq, llm
 
-RUN_CUTOFF = time(6, 0)  # matches the daily GitHub Actions schedule (06:00 UTC)
+# Fixed and earlier than the scheduled start (05:17 UTC), so every discussion a
+# pick could want already exists when the pipeline runs - the pick for a day
+# never changes after it's been made, even if GitHub starts the run early.
+RUN_CUTOFF = time(5, 0)
 MIN_SECTION_CHARS = 40
 
 CREATE_SECTIONS = f"""
@@ -132,7 +135,7 @@ def split_sections(product_text: str) -> list:
 
 def pick_daily_discussions(bronze_df: pd.DataFrame) -> pd.DataFrame:
     """For each run date D: the latest discussion issued in the 24 hours
-    before D 06:00 UTC. Returns columns run_date, product_id, issued_at, raw_json."""
+    before D 05:00 UTC. Returns columns run_date, product_id, issued_at, raw_json."""
     picks = []
     first_day = bronze_df["issued_at"].min().date() + timedelta(days=1)
     last_day = datetime.now(timezone.utc).date()
@@ -212,9 +215,11 @@ def run(con: duckdb.DuckDBPyConnection) -> int:
     bronze_df = con.execute("SELECT product_id, issued_at, raw_json FROM bronze.raw_forecast_discussions").df()
     if bronze_df.empty:
         return 0
-    done = {row[0] for row in con.execute("SELECT product_id FROM silver.forecast_discussion_extractions").fetchall()}
+    # Done-ness is per target day, not per discussion: a day is extracted once,
+    # even if a later run would pick a different discussion for it.
+    done = {row[0] for row in con.execute("SELECT target_date FROM silver.forecast_discussion_extractions").fetchall()}
     todo = pick_daily_discussions(bronze_df)
-    todo = todo[~todo["product_id"].isin(done)]
+    todo = todo[~todo["run_date"].map(lambda d: d + timedelta(days=1)).isin(done)]
 
     processed = 0
     for pick in todo.to_dict("records"):

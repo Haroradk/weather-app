@@ -89,7 +89,7 @@ sidebar. `.streamlit/config.toml` applies the Immeo colours and forces light mod
   back to the local file otherwise), so the same code runs locally and in CI. Requires a `.env`
   with `MOTHERDUCK_TOKEN` (and optionally `MOTHERDUCK_DATABASE`, default `weather`) — see `.env`,
   which is gitignored and never committed.
-- **GitHub Actions** (`.github/workflows/pipeline.yml`) — runs `run_pipeline.py` daily at 06:00 UTC
+- **GitHub Actions** (`.github/workflows/pipeline.yml`) — runs `run_pipeline.py` daily at 05:17 UTC
   against MotherDuck, using a `MOTHERDUCK_TOKEN` repository secret. Retries the whole run up to 3
   times (30s apart) before giving up, then opens a GitHub issue with a link to the failed run.
   Also has a manual "Run workflow" button in the Actions tab for on-demand runs.
@@ -179,7 +179,7 @@ Friday into the weekend..."*. It's free, needs no key, and covers New York only 
 | Gold | `gold.forecaster_vs_model_vs_actual` | The forecasters' call vs. our ML model vs. what actually happened |
 
 Design points worth knowing:
-- **Which discussion counts:** the latest one issued before our 06:00 UTC run, i.e. what the
+- **Which discussion counts:** the latest one issued before 05:00 UTC, just before our daily run, i.e. what the
   forecasters were saying when our model made its prediction. That keeps the comparison fair,
   and keeps Gemini to one extraction per day.
 - **LLM output is untrusted input.** Structured output guarantees the *shape* (valid JSON, allowed
