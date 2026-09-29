@@ -1,4 +1,7 @@
-duckdb
+# MotherDuck only accepts DuckDB versions it has released support for (1.5.5 as of
+# 2026-09-29); 1.5.6 shipped first and broke every connection. Raise this cap once
+# MotherDuck lists the newer version in its release notes.
+duckdb<1.5.6
 requests
 streamlit
 pandas
