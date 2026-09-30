@@ -244,6 +244,8 @@ from it, its columns (matching ones ticked), and a 5-row preview. It uses plain 
 (`src/catalog_search.py`), no LLM: a match in the name counts more than one in a description or
 column. The **business glossary** in `semantic_layer.yml` maps everyday words to the ones the
 data uses, so "rain" also finds `precipitation_sum_mm` and "data quality" finds `ops.dq_results`.
+The metric tiles on the Weather and Forecasts tabs link into the same catalog: "In catalog" opens
+that metric's page as a pop-up, where its lineage buttons walk on to the tables behind it.
 
 **Lineage** is declared in the same file: each node (the API, every table/view, the dashboard,
 the agent) lists what it's built from. `catalog.py` publishes it as `gold.lineage_edges`, and the

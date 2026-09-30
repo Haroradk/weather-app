@@ -185,18 +185,20 @@ def highlight(text: str, words: list) -> str:
     return re.sub(rf"(?<![A-Za-z0-9_])((?:{pattern})[A-Za-z0-9]*)", r"**\1**", text, flags=re.IGNORECASE)
 
 
-def _asset_buttons(label: str, asset_ids: list, assets: dict, key: str) -> None:
+def _asset_buttons(label: str, asset_ids: list, assets: dict, key: str, on_select) -> None:
     if not asset_ids:
         return
     st.markdown(f"**{label}**")
     columns = st.columns(2)
     for i, asset_id in enumerate(asset_ids):
         name = assets[asset_id]["name"] if asset_id in assets else asset_id
-        columns[i % 2].button(name, key=f"{key}_{asset_id}", on_click=select_catalog_asset, args=(asset_id,),
+        columns[i % 2].button(name, key=f"{key}_{asset_id}", on_click=on_select, args=(asset_id,),
                               disabled=asset_id not in assets, width="stretch")
 
 
-def render_catalog_asset(asset: dict, matched: list) -> None:
+def render_catalog_asset(asset: dict, matched: list, on_select=select_catalog_asset, key_prefix: str = "") -> None:
+    """One asset's catalog page. on_select is what its lineage buttons do; key_prefix
+    keeps widget keys apart when the same asset is also open in the catalog tab."""
     assets, _ = load_catalog()
     with st.container(border=True):
         st.markdown(f"#### {KIND_ICONS[asset['kind']]} {asset['name']}")
@@ -214,9 +216,9 @@ def render_catalog_asset(asset: dict, matched: list) -> None:
             st.markdown(f"**Unit** {metric['unit']}")
             st.code(f"SELECT {metric['expression']}\nFROM {metric['table']}\nWHERE {metric['filter']}", language="sql")
 
-        _asset_buttons("Comes from", asset["upstream"], assets, f"up_{asset['id']}")
-        _asset_buttons("Feeds into", asset["downstream"], assets, f"down_{asset['id']}")
-        _asset_buttons("Metrics computed from it", asset.get("metrics", []), assets, f"metric_{asset['id']}")
+        _asset_buttons("Comes from", asset["upstream"], assets, f"{key_prefix}up_{asset['id']}", on_select)
+        _asset_buttons("Feeds into", asset["downstream"], assets, f"{key_prefix}down_{asset['id']}", on_select)
+        _asset_buttons("Metrics computed from it", asset.get("metrics", []), assets, f"{key_prefix}metric_{asset['id']}", on_select)
 
         if asset["columns"]:
             st.markdown("**Columns**")
@@ -231,6 +233,29 @@ def render_catalog_asset(asset: dict, matched: list) -> None:
             previewable = tuple(c["name"] for c in asset["columns"] if c["name"] != "raw_json" and not re.search(r"\[\d+\]", c["type"]))
             with st.expander("Preview 5 rows"):
                 st.dataframe(preview_rows(asset["id"], previewable), hide_index=True, width="stretch")
+
+
+def select_dialog_asset(asset_id: str) -> None:
+    st.session_state.dialog_asset = asset_id
+
+
+@st.dialog("Data catalog", width="large")
+def catalog_dialog() -> None:
+    """A metric tile's catalog page as a pop-up. Streamlit can't switch tabs from
+    code, so this brings the catalog to the tile instead. Lineage buttons inside
+    it only rerun the dialog, so you can walk from the metric to its tables."""
+    assets, _ = load_catalog()
+    asset_id = st.session_state.get("dialog_asset")
+    if asset_id in assets:
+        render_catalog_asset(assets[asset_id], [], on_select=select_dialog_asset, key_prefix="dialog_")
+    st.caption("The full searchable catalog is on the Data & governance tab.")
+
+
+def catalog_link(column, metric_name: str, label: str = "In catalog") -> None:
+    if column.button(label, key=f"catalog_link_{metric_name}", icon=":material/menu_book:", type="tertiary",
+                     help="Open this metric's definition, SQL and lineage in the data catalog"):
+        st.session_state.dialog_asset = f"metric:{metric_name}"
+        catalog_dialog()
 
 
 tab_weather, tab_ml, tab_pipeline, tab_data = st.tabs(
@@ -275,10 +300,12 @@ with tab_weather:
     first_day, last_day = gold_df["date"].min(), gold_df["date"].max()
     st.caption(
         f"Settled history {first_day:%d %b} to {last_day:%d %b %Y}. Every number comes from a definition in "
-        "the semantic layer (gold.metric_definitions), the same ones the weather agent uses. Hover a tile for its definition."
+        "the semantic layer (gold.metric_definitions), the same ones the weather agent uses. Hover a tile for its definition, or open it in the data catalog."
     )
     weather_metrics = ["avg_temperature", "rainy_days", "total_precipitation", "max_wind_speed"]
     values = metric_values(weather_metrics)
+    for col, name in zip(st.columns(len(weather_metrics)), weather_metrics):
+        catalog_link(col, name, f"{metric_defs.set_index('name').loc[name].label} in catalog")
     for city in selected_cities:
         st.markdown(f"**{city}**")
         for col, name in zip(st.columns(len(weather_metrics)), weather_metrics):
@@ -394,6 +421,8 @@ with tab_ml:
     h1, h2, _ = st.columns([1, 1, 2])
     metric_tile(h1, "forecaster_rain_hit_rate", hit["forecaster_rain_hit_rate"].get("New York"), "{:.0%}")
     metric_tile(h2, "model_rain_hit_rate", hit["model_rain_hit_rate"].get("New York"), "{:.0%}")
+    catalog_link(h1, "forecaster_rain_hit_rate")
+    catalog_link(h2, "model_rain_hit_rate")
     comparison_df = con.execute(
         """
         SELECT target_date, forecaster_rain_expected, model_precipitation_sum_mm, actual_precipitation_sum_mm,
