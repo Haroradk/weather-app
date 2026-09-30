@@ -34,7 +34,8 @@ src/dq.py                tiny hand-rolled data quality checks (incl. documentati
 src/discussion_*.py      unstructured branch: NWS forecaster text -> bronze -> silver (sections, embeddings, LLM extraction) -> gold
 src/llm.py               the pipeline's only Gemini calls (structured extraction + embeddings), with retries
 src/catalog.py           publishes semantic_layer.yml into the warehouse (descriptions, metrics, eval view)
-semantic_layer.yml       single definition of gold tables, columns and business metrics
+src/catalog_search.py    keyword search over the published catalog, for the dashboard's "Find data"
+semantic_layer.yml       single definition of every table, column, business metric and glossary term
 run_pipeline.py           orchestrates bronze -> dq -> silver -> dq -> gold -> dq -> forecast -> dq -> catalog -> dq
 scripts/backfill_history.py  one-off: seed real historical days so forecast.py has enough to train on
 scripts/backtest.py       one-off/occasional: fill in historical forecast accuracy retroactively
@@ -77,8 +78,8 @@ streamlit run app.py
 Opens at http://localhost:8501. A status line at the top shows the latest run's traffic light,
 with four tabs below it: **Weather** (metric tiles computed from the semantic layer, and charts),
 **Forecasts & ML** (tomorrow's prediction, accuracy, and forecasters vs. model), **Pipeline** (every
-check from the latest run, and the run history), and **Data & governance** (lineage, metric
-definitions, a browsable data catalog, and the raw silver and bronze tables). The city filter is in the
+check from the latest run, and the run history), and **Data & governance** (a searchable data
+catalog, lineage, metric definitions, and the raw silver and bronze tables). The city filter is in the
 sidebar. `.streamlit/config.toml` applies the Immeo colours and forces light mode. Run
 `streamlit run app.py` from this folder, so Streamlit finds that file.
 
@@ -220,19 +221,29 @@ It's still documented and declared in the lineage like everything else.
 
 ## Semantic layer & data catalog
 
-`semantic_layer.yml` is the one place where gold tables, their columns, and business metrics
-(e.g. "rainy day = more than 1 mm of precipitation") are defined. It's the same idea as dbt's
+`semantic_layer.yml` is the one place where every table (bronze to gold, plus ops), its columns,
+and business metrics (e.g. "rainy day = more than 1 mm of precipitation") are defined. It's the same idea as dbt's
 `schema.yml` + metrics, or a Power BI semantic model: define a meaning once, and every consumer
 reuses that one definition instead of re-deriving its own.
 
 `src/catalog.py` runs as the last pipeline step and publishes it into MotherDuck:
-- **Descriptions** as DuckDB `COMMENT`s on every gold table/view/column. It has to re-run every
+- **Descriptions** as DuckDB `COMMENT`s on every table/view/column in every layer.
+  `dq.check_documented` fails the run if anything in bronze, silver, gold or ops lacks one. It has to re-run every
   time, because gold is rebuilt with `CREATE OR REPLACE`, which wipes comments.
 - **`gold.metric_definitions`**: each metric's SQL expression, filter, and unit. The dashboard's
   "Key metrics" table is computed from it, and the weather-agent reads the same table.
 - **`gold.forecast_evaluation`**: the predicted-vs-actual join as a view. Before it existed, the
   dashboard's own join also scored today's not-yet-finished day against Open-Meteo's forecast
   for it, and counted that as the "actual" value. The view keeps only fully settled days.
+
+**Finding data.** The Data & governance tab starts with a catalog search, like Purview or Unity
+Catalog: type a word and get every table, view, metric and source (APIs, apps) that mentions it,
+ranked, with filters by type and layer. Opening a result shows its description, row count, what
+it comes from and feeds into (click through to walk the lineage), which metrics are computed
+from it, its columns (matching ones ticked), and a 5-row preview. It uses plain keyword scoring
+(`src/catalog_search.py`), no LLM: a match in the name counts more than one in a description or
+column. The **business glossary** in `semantic_layer.yml` maps everyday words to the ones the
+data uses, so "rain" also finds `precipitation_sum_mm` and "data quality" finds `ops.dq_results`.
 
 **Lineage** is declared in the same file: each node (the API, every table/view, the dashboard,
 the agent) lists what it's built from. `catalog.py` publishes it as `gold.lineage_edges`, and the

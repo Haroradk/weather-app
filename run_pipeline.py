@@ -127,8 +127,8 @@ def run_steps(con, run_started_at: datetime) -> None:
     dq.set_step("catalog")
     print("Catalog: applying semantic_layer.yml...")
     described = catalog.run(con)
-    dq.check_documented(con, "gold")
-    dq.check_documented(con, "ops")
+    for schema in ("bronze", "silver", "gold", "ops"):
+        dq.check_documented(con, schema)
     dq.check_lineage(con, catalog.load_semantic_layer()["lineage"], Path(__file__).parent)
     print(f"Catalog done: {described} descriptions applied.\n")
 

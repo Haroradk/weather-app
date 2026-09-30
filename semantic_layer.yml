@@ -1,10 +1,84 @@
-# Semantic layer + data catalog: the single place where gold tables, their
-# columns, and business metrics are described. src/catalog.py applies this
+# Semantic layer + data catalog: the single place where every table (bronze
+# to gold, plus ops), its columns, business metrics and glossary terms are
+# described. src/catalog.py applies this
 # to the warehouse on every pipeline run (as DuckDB COMMENTs and a
 # gold.metric_definitions table), so the dashboard, the weather-agent, and
 # anyone browsing MotherDuck all read the same definitions.
 
 tables:
+  bronze.raw_forecast_discussions:
+    description: >-
+      Raw Area Forecast Discussions from the US National Weather Service, New York office (OKX),
+      exactly as the API returned them. Append-only: the API keeps only ~7 days, so this table is
+      the archive. Free text, not a time series.
+    columns:
+      product_id: NWS product ID, unique per discussion.
+      office: Issuing forecast office code (OKX = New York).
+      issued_at: When the forecasters issued the discussion (UTC).
+      fetched_at: When the pipeline downloaded it (UTC).
+      source_url: API URL the discussion was fetched from.
+      raw_json: Full API response, unparsed.
+
+  bronze.raw_weather_observations:
+    description: >-
+      Raw Open-Meteo API responses, one row per city per pipeline run, stored unparsed so any
+      later transformation can be replayed from source.
+    columns:
+      city: City the request was for.
+      fetched_at: When the pipeline called the API (UTC).
+      source_url: Exact API URL called, including coordinates and requested variables.
+      raw_json: Full API response, unparsed.
+
+  silver.weather_hourly:
+    description: >-
+      Hourly weather readings per city, parsed and de-duplicated from bronze. The latest fetch
+      wins when two fetches cover the same hour.
+    columns:
+      city: City name - one of Copenhagen, London, New York.
+      observation_time: The hour the reading is for (UTC).
+      temperature_c: Air temperature at 2 m, degrees Celsius.
+      precipitation_mm: Precipitation (rain + snow) in that hour, millimetres.
+      wind_speed_kmh: Wind speed at 10 m, km/h.
+      humidity_pct: Relative humidity at 2 m, percent.
+      loaded_at: When the pipeline wrote this row.
+
+  silver.forecast_discussion_sections:
+    description: >-
+      One NWS forecast discussion per day, split into its titled sections (synopsis, near term,
+      short term, ...), each with a Gemini embedding for semantic search. The weather agent searches this table
+      for what forecasters wrote.
+    columns:
+      product_id: NWS product ID of the discussion the section came from.
+      issued_at: When the discussion was issued (UTC).
+      run_date: The day this discussion was picked for (the latest one issued before 05:00 UTC).
+      section_index: Position of the section within the discussion, from 0.
+      section_name: Section heading as the forecasters wrote it, e.g. SYNOPSIS.
+      content: The section's text.
+      embedding: 768-number vector of the text's meaning, for similarity search.
+      embedding_model: Gemini model that produced the embedding.
+
+  silver.forecast_discussion_extractions:
+    description: >-
+      Structured facts an LLM (Gemini) read out of one forecast discussion per day - rain
+      expectation, temperatures, wind, hazards - each backed by a quote. Null means the
+      forecasters did not state it. evidence_verified checks the quote appears verbatim.
+    columns:
+      product_id: NWS product ID of the discussion that was read.
+      issued_at: When that discussion was issued (UTC).
+      target_date: The day the extracted forecast is about (the day after issue).
+      rain_expected: Forecasters' rain call for New York City - none, possible or likely.
+      rain_amount_inches_max: Highest rain amount mentioned, inches.
+      high_temp_f: Forecast high temperature for NYC, degrees Fahrenheit.
+      low_temp_f: Forecast low temperature for NYC, degrees Fahrenheit.
+      max_wind_gust_mph: Highest wind gust mentioned, mph.
+      hazards: Hazards mentioned, e.g. coastal flooding, thunderstorms.
+      forecaster_confidence: How confident the forecasters sounded - low, medium or high.
+      summary: One-sentence summary of the forecast, written by the LLM.
+      evidence: Quote from the discussion supporting the rain call.
+      evidence_verified: TRUE if the evidence quote appears word for word in the discussion.
+      extraction_model: Gemini model that did the extraction.
+      extracted_at: When the extraction ran (UTC).
+
   gold.weather_daily_summary:
     description: >-
       One row per city per day, aggregated from hourly readings. Blends two kinds of rows
@@ -140,6 +214,19 @@ tables:
       target: The table, schema, or thing checked.
       status: pass, warn, or fail.
       detail: What the check found, in words.
+
+# Business glossary: everyday words people search with, mapped to the words
+# the data actually uses. The dashboard's catalog search expands a search for
+# any word in a group to the whole group ("rain" also finds "precipitation").
+glossary:
+  rain: [precipitation, precip, rainy, wet, shower]
+  temperature: [temp, warm, cold, hot, heat, degrees]
+  wind: [gust, windy, storm]
+  forecast: [prediction, predicted, predict, model, ml, backtest]
+  forecaster: [nws, discussion, afd, text, unstructured, llm, extraction]
+  quality: [dq, check, checks, health, freshness]
+  lineage: [upstream, downstream, dependency, built]
+  raw: [bronze, source, api, json]
 
 metrics:
   - name: rainy_days
@@ -280,6 +367,7 @@ lineage:
       - gold.forecaster_vs_model_vs_actual
       - ops.pipeline_runs
       - ops.dq_results
+      - semantic_layer.yml
   weather_agent:
     type: consumer
     label: Weather agent (separate repo)

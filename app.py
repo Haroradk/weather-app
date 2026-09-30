@@ -10,6 +10,7 @@ Run with: streamlit run app.py
 """
 
 import os
+import re
 
 import pandas as pd
 import plotly.express as px
@@ -29,10 +30,18 @@ except Exception:
     pass  # no secrets.toml locally - that's fine, .env covers local dev
 
 import config
+from src import catalog, catalog_search
 
 st.set_page_config(page_title="Weather data platform", page_icon="\U0001F326", layout="wide")
 # Streamlit has no size option for tab labels, so a little CSS bumps them up.
 st.markdown("<style>button[data-baseweb='tab'] p {font-size: 1.1rem;}</style>", unsafe_allow_html=True)
+# Keeps the catalog's detail panel in view while scrolling through search
+# results, like the side panel of a real data catalog.
+st.markdown(
+    "<style>[data-testid='stColumn']:has(.st-key-catalog_detail) {position: sticky; top: 4rem; align-self: flex-start; "
+    "max-height: calc(100vh - 5rem); overflow-y: auto;}</style>",
+    unsafe_allow_html=True,
+)
 
 # scrollZoom: drag-to-zoom is on by default in Plotly, but scroll-wheel/pinch
 # zoom isn't unless enabled explicitly. displaylogo=False just hides the
@@ -108,6 +117,120 @@ with st.container(border=True):
         )
         if latest["error"]:
             st.error(f"The latest run stopped: {latest['error']}")
+
+# ---------------------------------------------------------------- catalog search helpers
+KIND_ICONS = {
+    "Table": ":material/table_chart:", "View": ":material/view_agenda:", "Metric": ":material/functions:",
+    "Source": ":material/cloud_download:", "Service": ":material/smart_toy:", "Consumer": ":material/dashboard:",
+    "File": ":material/description:",
+}
+LAYER_BADGES = {"gold": "green", "silver": "gray", "bronze": "orange", "ops": "blue", "semantic layer": "violet", "outside the warehouse": "gray"}
+CATALOG_SUGGESTIONS = ["rain", "wind gust", "forecaster text", "data quality", "embedding"]
+MAX_CATALOG_RESULTS = 8
+
+
+@st.cache_data(ttl=600)
+def load_catalog():
+    """Everything searchable, from the published catalog - see src/catalog_search.py."""
+    layer = catalog.load_semantic_layer()
+    return catalog_search.build_index(con, layer), layer.get("glossary", {})
+
+
+@st.cache_data(ttl=600)
+def row_count(table_id: str) -> int:
+    # table_id comes from the warehouse's own object list, never from what the user typed.
+    return con.execute(f"SELECT COUNT(*) FROM {table_id}").fetchone()[0]
+
+
+@st.cache_data(ttl=600)
+def preview_rows(table_id: str, column_names: tuple) -> pd.DataFrame:
+    select_list = ", ".join('"' + c + '"' for c in column_names)
+    df = con.execute(f"SELECT {select_list} FROM {table_id} LIMIT 5").df()
+    for column in df.columns:
+        if df[column].dtype == object:
+            df[column] = df[column].map(lambda v: v[:120] + "..." if isinstance(v, str) and len(v) > 120 else v)
+    return df
+
+
+def set_catalog_query(query: str) -> None:
+    st.session_state.catalog_query = query
+    clear_catalog_selection()
+
+
+def clear_catalog_selection() -> None:
+    st.session_state.pop("catalog_selected", None)
+
+
+def select_catalog_asset(asset_id: str) -> None:
+    st.session_state.catalog_selected = asset_id
+
+
+def asset_badges(asset: dict) -> str:
+    badges = f":{LAYER_BADGES.get(asset['layer'], 'gray')}-badge[{asset['layer']}] :gray-badge[{asset['kind']}]"
+    if not asset["description"] and asset["kind"] in ("Table", "View"):
+        badges += " :red-badge[undocumented]"
+    return badges
+
+
+def snippet(text: str, limit: int = 180) -> str:
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " ..."
+
+
+def highlight(text: str, words: list) -> str:
+    """Bold every word that starts with a searched word (or a glossary synonym of one)."""
+    if not words:
+        return text
+    pattern = "|".join(re.escape(w) for w in words)
+    return re.sub(rf"(?<![A-Za-z0-9_])((?:{pattern})[A-Za-z0-9]*)", r"**\1**", text, flags=re.IGNORECASE)
+
+
+def _asset_buttons(label: str, asset_ids: list, assets: dict, key: str) -> None:
+    if not asset_ids:
+        return
+    st.markdown(f"**{label}**")
+    columns = st.columns(2)
+    for i, asset_id in enumerate(asset_ids):
+        name = assets[asset_id]["name"] if asset_id in assets else asset_id
+        columns[i % 2].button(name, key=f"{key}_{asset_id}", on_click=select_catalog_asset, args=(asset_id,),
+                              disabled=asset_id not in assets, width="stretch")
+
+
+def render_catalog_asset(asset: dict, matched: list) -> None:
+    assets, _ = load_catalog()
+    with st.container(border=True):
+        st.markdown(f"#### {KIND_ICONS[asset['kind']]} {asset['name']}")
+        st.markdown(asset_badges(asset))
+        st.write(asset["description"] or "No description yet - add one in semantic_layer.yml.")
+
+        if asset["kind"] in ("Table", "View"):
+            rows_tile, columns_tile = st.columns(2)
+            rows_tile.metric("Rows", f"{row_count(asset['id']):,}", border=True)
+            columns_tile.metric("Columns", len(asset["columns"]), border=True)
+        if asset.get("built_by"):
+            st.markdown(f"**Built by** `{asset['built_by']}`")
+        if asset.get("metric"):
+            metric = asset["metric"]
+            st.markdown(f"**Unit** {metric['unit']}")
+            st.code(f"SELECT {metric['expression']}\nFROM {metric['table']}\nWHERE {metric['filter']}", language="sql")
+
+        _asset_buttons("Comes from", asset["upstream"], assets, f"up_{asset['id']}")
+        _asset_buttons("Feeds into", asset["downstream"], assets, f"down_{asset['id']}")
+        _asset_buttons("Metrics computed from it", asset.get("metrics", []), assets, f"metric_{asset['id']}")
+
+        if asset["columns"]:
+            st.markdown("**Columns**")
+            columns_df = pd.DataFrame(asset["columns"])
+            columns_df.insert(0, "match", columns_df["name"].map(lambda c: "\u2714" if c in matched else ""))
+            st.dataframe(
+                columns_df, hide_index=True, width="stretch",
+                column_config={"match": st.column_config.TextColumn("", width="small"), "name": "Column", "type": "Type",
+                               "description": st.column_config.TextColumn("Description", width="large")},
+            )
+            # Embeddings and raw API payloads are thousands of characters of noise in a preview.
+            previewable = tuple(c["name"] for c in asset["columns"] if c["name"] != "raw_json" and not re.search(r"\[\d+\]", c["type"]))
+            with st.expander("Preview 5 rows"):
+                st.dataframe(preview_rows(asset["id"], previewable), hide_index=True, width="stretch")
+
 
 tab_weather, tab_ml, tab_pipeline, tab_data = st.tabs(
     ["\U0001F326 **Weather**", "\U0001F4C8 **Forecasts & ML**", "\u2699\ufe0f **Pipeline**", "\U0001F5C2 **Data & governance**"]
@@ -331,6 +454,63 @@ with tab_pipeline:
 
 # ---------------------------------------------------------------- Data & governance
 with tab_data:
+    st.subheader("Find data")
+    st.caption(
+        "Search every table, column, metric and source in the catalog, bronze to gold. Everyday words work too: "
+        "the business glossary in semantic_layer.yml maps e.g. \u201crain\u201d to \u201cprecipitation\u201d."
+    )
+    assets, glossary = load_catalog()
+    query = st.text_input(
+        "Search the catalog", key="catalog_query", on_change=clear_catalog_selection, icon=":material/search:",
+        placeholder="e.g. rain, wind gust, forecaster text, data quality", label_visibility="collapsed",
+    )
+    if not query:
+        suggestion_columns = st.columns(len(CATALOG_SUGGESTIONS))
+        for column, suggestion in zip(suggestion_columns, CATALOG_SUGGESTIONS):
+            column.button(suggestion, key=f"suggest_{suggestion}", on_click=set_catalog_query, args=(suggestion,),
+                          icon=":material/search:", width="stretch")
+
+    all_results = catalog_search.search(assets, query, glossary)
+    kind_counts = pd.Series([a["kind"] for a, _, _ in all_results]).value_counts().to_dict() if all_results else {}
+    layer_counts = pd.Series([a["layer"] for a, _, _ in all_results]).value_counts().to_dict() if all_results else {}
+    facet_left, facet_right = st.columns(2)
+    kinds = facet_left.pills(
+        "Type", [k for k in KIND_ICONS if k in kind_counts], selection_mode="multi", key="catalog_kinds",
+        format_func=lambda k: f"{k} ({kind_counts.get(k, 0)})", on_change=clear_catalog_selection,
+    )
+    layers = facet_right.pills(
+        "Layer", [l for l in LAYER_BADGES if l in layer_counts], selection_mode="multi", key="catalog_layers",
+        format_func=lambda l: f"{l} ({layer_counts.get(l, 0)})", on_change=clear_catalog_selection,
+    )
+    results = [r for r in all_results if (not kinds or r[0]["kind"] in kinds) and (not layers or r[0]["layer"] in layers)]
+    matched_columns = {asset["id"]: columns for asset, _, columns in results}
+    words = catalog_search.matched_words(query, glossary)
+
+    results_column, detail_column = st.columns([2, 3], gap="large")
+    with results_column:
+        if not results:
+            st.info("Nothing matches. Try a broader word, or clear the filters.")
+        else:
+            st.caption(f"{len(results)} result{'s' if len(results) != 1 else ''}" + (f" for \u201c{query}\u201d" if query else ", gold first"))
+        for asset, _, columns in results[:MAX_CATALOG_RESULTS]:
+            with st.container(border=True):
+                st.markdown(f"{KIND_ICONS[asset['kind']]} **{asset['name']}**")
+                st.markdown(asset_badges(asset))
+                if asset["description"]:
+                    st.caption(highlight(snippet(asset["description"]), words))
+                if columns:
+                    st.caption("Matching columns: " + ", ".join(f"`{c}`" for c in columns[:4]) + (" ..." if len(columns) > 4 else ""))
+                st.button("Open", key=f"open_{asset['id']}", on_click=select_catalog_asset, args=(asset["id"],),
+                          icon=":material/arrow_forward:", type="tertiary")
+        if len(results) > MAX_CATALOG_RESULTS:
+            st.caption(f"+{len(results) - MAX_CATALOG_RESULTS} more - narrow the search or use the filters.")
+
+    selected_id = st.session_state.get("catalog_selected") or (results[0][0]["id"] if results else None)
+    with detail_column.container(key="catalog_detail"):
+        if selected_id in assets:
+            render_catalog_asset(assets[selected_id], matched_columns.get(selected_id, []))
+
+    st.divider()
     st.subheader("Lineage: how everything on this page is built")
     st.caption(
         "Declared in semantic_layer.yml, published to gold.lineage_edges, and checked on every run against "
@@ -360,32 +540,6 @@ with tab_data:
         use_container_width=True, hide_index=True,
         column_config={"label": "Metric", "description": st.column_config.TextColumn("Meaning", width="large"),
                        "unit": "Unit", "table_name": "Computed from", "expression": "SQL", "filter": "Always filtered by"},
-    )
-
-    st.subheader("Data catalog")
-    catalog_tables = [row[0] for row in con.execute(
-        "SELECT schema_name || '.' || table_name FROM duckdb_tables() WHERE database_name = current_database() "
-        "AND schema_name IN ('gold', 'ops') UNION ALL "
-        "SELECT schema_name || '.' || view_name FROM duckdb_views() WHERE database_name = current_database() "
-        "AND schema_name IN ('gold', 'ops') AND NOT internal ORDER BY 1"
-    ).fetchall()]
-    chosen = st.selectbox("Table", catalog_tables, index=catalog_tables.index("gold.weather_daily_summary")
-                          if "gold.weather_daily_summary" in catalog_tables else 0)
-    schema, name = chosen.split(".")
-    description = con.execute(
-        "SELECT comment FROM duckdb_tables() WHERE database_name = current_database() AND schema_name = ? AND table_name = ? "
-        "UNION ALL SELECT comment FROM duckdb_views() WHERE database_name = current_database() AND schema_name = ? AND view_name = ?",
-        [schema, name, schema, name],
-    ).fetchone()[0]
-    st.info(description or "No description.")
-    st.dataframe(
-        con.execute(
-            "SELECT column_name, data_type, comment FROM duckdb_columns() "
-            "WHERE database_name = current_database() AND schema_name = ? AND table_name = ? ORDER BY column_index",
-            [schema, name],
-        ).df(),
-        use_container_width=True, hide_index=True,
-        column_config={"column_name": "Column", "data_type": "Type", "comment": st.column_config.TextColumn("Description", width="large")},
     )
 
     st.subheader("Raw layers")
