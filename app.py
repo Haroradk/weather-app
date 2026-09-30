@@ -152,8 +152,9 @@ def preview_rows(table_id: str, column_names: tuple) -> pd.DataFrame:
     return df
 
 
-def set_catalog_query(query: str) -> None:
-    st.session_state.catalog_query = query
+def use_catalog_suggestion() -> None:
+    st.session_state.catalog_query = st.session_state.catalog_suggestion or ""
+    st.session_state.catalog_suggestion = None
     clear_catalog_selection()
 
 
@@ -465,10 +466,7 @@ with tab_data:
         placeholder="e.g. rain, wind gust, forecaster text, data quality", label_visibility="collapsed",
     )
     if not query:
-        suggestion_columns = st.columns(len(CATALOG_SUGGESTIONS))
-        for column, suggestion in zip(suggestion_columns, CATALOG_SUGGESTIONS):
-            column.button(suggestion, key=f"suggest_{suggestion}", on_click=set_catalog_query, args=(suggestion,),
-                          icon=":material/search:", width="stretch")
+        st.pills("Try", CATALOG_SUGGESTIONS, key="catalog_suggestion", on_change=use_catalog_suggestion)
 
     all_results = catalog_search.search(assets, query, glossary)
     kind_counts = pd.Series([a["kind"] for a, _, _ in all_results]).value_counts().to_dict() if all_results else {}
